@@ -180,7 +180,8 @@ class UninstallTests(unittest.TestCase):
     """maxed uninstall removes only what this install made."""
 
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp()) / "maxedcode"
+        # resolved: %TEMP% may be a short 8.3 path (C:\Users\RUNNER~1) and uninstall works with the full one
+        self.root = (Path(tempfile.mkdtemp()) / "maxedcode").resolve()
         (self.root / "program" / "maxedcode").mkdir(parents=True)
         (self.root / "program" / "maxedcode" / "config.py").write_text("", encoding="utf-8")
         (self.root / "program" / "bin").mkdir()
