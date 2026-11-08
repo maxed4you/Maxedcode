@@ -1,5 +1,6 @@
 # A v* tag (git tag v1.0.0 && git push origin v1.0.0) builds Maxedcode_setup.zip and attaches it to the release,
-# then publishes the npm package with the tag's version (only when the NPM_TOKEN secret is set).
+# then publishes the npm package with the tag's version (trusted publishing: set up once on npmjs.com, package
+# maxedcode -> Settings -> Trusted Publisher -> GitHub Actions, maxed4you/Maxedcode, release.yml).
 name: release
 
 on:
@@ -50,18 +51,23 @@ jobs:
 
   npm:
     needs: setup-zip
-    if: startsWith(github.ref, 'refs/tags/')
+    # Publishing makes the code public: only for a tag, and only from a public repository.
+    if: startsWith(github.ref, 'refs/tags/') && github.event.repository.private == false
     runs-on: ubuntu-latest
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      contents: read
+      id-token: write          # npm trusted publishing (OIDC): no token to store or renew
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"   # npm 11.5+ is needed for trusted publishing
           registry-url: "https://registry.npmjs.org"
       - name: Publish to npm
-        if: env.NODE_AUTH_TOKEN != ''
         run: |
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "maxedcode@$version" version >/dev/null 2>&1; then
+            echo "maxedcode@$version is already on npm"; exit 0
+          fi
+          npm version "$version" --no-git-tag-version --allow-same-version
           npm publish --access public
