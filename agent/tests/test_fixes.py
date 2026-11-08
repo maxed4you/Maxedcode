@@ -218,15 +218,22 @@ class EscTakeBackTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(copied[-1], "Йоу")
                 self.assertFalse(prompt.highlight_cursor_line)
 
+                async def until(cond, timeout=10):
+                    """Wait for a state, not a fixed time: a slow CI runner needs longer than 0.2 s."""
+                    for _ in range(int(timeout / 0.05)):
+                        if cond():
+                            return
+                        await pilot.pause(0.05)
+
                 n0, marks0 = len(agent.msgs), len(agent.marks)
                 prompt.text = "first"
                 await pilot.press("enter")
-                await pilot.pause(0.2)
+                await until(lambda: agent.busy and users() == ["❯ first"])
                 prompt.text = "second"   # steer while the model works
                 await pilot.press("enter")
-                await pilot.pause(0.2)
+                await until(lambda: list(agent.steer_queue))
                 await pilot.press("escape")   # takes back only the unread steer, the turn keeps running
-                await pilot.pause(0.2)
+                await until(lambda: prompt.text == "second")
                 self.assertEqual(prompt.text, "second")
                 self.assertTrue(agent.busy)
                 self.assertEqual(list(agent.steer_queue), [])
