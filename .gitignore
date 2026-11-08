@@ -58,7 +58,7 @@ desktop/app/python.txt
 
 # The author's own notes, sync buttons and settings: they stay on the author's disk, never on GitHub
 dev/
-CLAUDE.md
+CLAUDE.local.md
 .maxedcode/
 docs/
 agent/settings.json

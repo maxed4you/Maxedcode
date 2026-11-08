@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 from ..config import HOME
@@ -43,7 +44,9 @@ def snap(path, old, new=False, message_id=None, turn=None):
     name = None
     if not new:
         h = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
-        name = f"{h}.{time.time_ns()}.bak"   # ms collided for two snaps of one file (/redo of a group)
+        # a random part too: time_ns() ticks every ~15 ms on some Windows clocks, and two snaps of one file in
+        # one tick overwrote the older copy (only the newest /undo step could be taken back)
+        name = f"{h}.{time.time_ns()}.{uuid.uuid4().hex[:8]}.bak"
         with suppress(Exception):
             (d / name).write_bytes(old if isinstance(old, bytes) else (old or "").encode("utf-8"))
     idx = d / "index.jsonl"

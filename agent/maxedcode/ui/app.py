@@ -1483,7 +1483,8 @@ class AgentApp(App):
 
     def hide_bar(self):
         # Do not set display=False: adding/removing a row can reset a selection.
-        self.query_one("#copied", Static).update("")
+        for bar in self.query("#copied"):     # the timer may fire after the screen changed: no bar, no error
+            bar.update("")
 
     def action_copy_selection(self):
         """Ctrl+Shift+C copies the active selection, or the visible chat if none exists."""

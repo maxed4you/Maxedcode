@@ -76,6 +76,19 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.p1.read_text(encoding="utf-8"), "a0")
         self.assertEqual(undo.undo_step(), [])
 
+    def test_two_snaps_in_one_clock_tick_keep_both_copies(self):
+        """time_ns() is coarse on some Windows clocks: two snaps of one file in one tick must not share a name."""
+        with patch.object(undo.time, "time_ns", return_value=1_700_000_000_000_000_000):
+            undo.set_turn("turn-1")
+            undo.snap(str(self.p1), "a0")
+            undo.set_turn("turn-2")
+            undo.snap(str(self.p1), "a1")
+            self.p1.write_text("a2", encoding="utf-8")
+        undo.set_turn(None)
+        self.assertEqual(undo.undo_step(), [str(self.p1)])
+        self.assertEqual(undo.undo_step(), [str(self.p1)])
+        self.assertEqual(self.p1.read_text(encoding="utf-8"), "a0")
+
     def test_bytes_snapshot_keeps_crlf(self):
         self.p1.write_bytes(b"x\r\ny\r\n")
         undo.snap(str(self.p1), self.p1.read_bytes())
