@@ -655,6 +655,39 @@ class PlainRequestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionTabTitleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_message_survives_a_slow_session_open(self):
+        """A message queued in another tab while its session opens slowly: the agent counts as busy (so the 0.5 s
+        tick does not start show_tab, which cancelled the start), and a start cancelled anyway keeps the message."""
+        from maxedcode.ui import app as app_module
+
+        agent = app_module.AgentApp()
+        session_start = {"event": "SessionStart", "decision": None, "input": None,
+                         "context": "", "message": "", "stop": False}
+        opening = asyncio.Event()
+
+        async def slow_open(sid):          # a slow PC: opening the session takes longer than one tick
+            opening.set()
+            await asyncio.sleep(100)
+
+        with patch.object(app_module.config, "resolve_server", return_value={}), \
+             patch.object(agent.mcp, "cfg", return_value={}), \
+             patch.object(app_module.hooks, "run", new=AsyncMock(return_value=session_start)), \
+             patch.object(agent, "open_session_safely", new=slow_open), \
+             patch.object(app_module.AgentApp, "_file_queue") as filed:
+            async with agent.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                agent._session_queue = [("other-tab", "Add dark mode")]
+                start = asyncio.ensure_future(agent.drain_session_queue())
+                await asyncio.wait_for(opening.wait(), 5)
+                self.assertEqual(agent._session_queue, [])
+                self.assertTrue(agent._live_busy(), "a starting queued message must keep the tick away")
+                start.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await start
+                self.assertEqual(agent._session_queue, [("other-tab", "Add dark mode")])
+                self.assertFalse(agent._live_busy())
+                filed.assert_called_with("other-tab", "Add dark mode", add=True)   # back in its session file
+
     async def test_previous_tab_keeps_its_title_after_new_session(self):
         from maxedcode.ui import app as app_module
 

@@ -444,6 +444,7 @@ class AgentApp(App):
         self._peek_n, self._peek_cards, self._peek_key, self._peek_new = 0, {}, None, False
         self._peek_live = None   # the reply a running subagent is writing, shown below its saved messages
         self._session_queue = []   # (sid, text): first messages of other tabs, run once the live session is idle
+        self._starting_queued = False   # drain_session_queue is opening a session to send its message
         self._peek_busy = False
         self.sess_path, self.sess_cwd = None, ""   # session file: its own cwd, or any project via /history
         self.mem, self.head, self.marks, self.hctx, self.name_ = [], 1, [], "", ""   # memory message: the cached prefix ends there
@@ -786,7 +787,7 @@ class AgentApp(App):
         """The live session hasn't fully finished: a turn (with the subagents it runs), its own
         queue, or the start of a queued message from another tab."""
         worker = self.worker
-        return bool(self.busy or self.queue or self._draining_queue
+        return bool(self.busy or self.queue or self._draining_queue or self._starting_queued
                     or (worker is not None and not worker.is_finished))
 
     def _tab_label(self, sid):
@@ -1263,15 +1264,27 @@ class AgentApp(App):
         if self._live_busy() or not self._session_queue:
             return
         sid, text = self._session_queue.pop(0)
-        self._file_queue(sid, text, add=False)   # it is sent now: opening the session must not restore it too
-        if sid != self.sid and not await self.open_session_safely(sid):
-            self.restore_input([text])
-            self.notify("The queued message could not start: its session didn't open. It is back in the input.",
-                        severity="error")
-            return
-        if self.view_sid == sid:
-            await self.leave_peek()
-        await self.on_prompt_submitted(None, queued=text)
+        # Busy while the session opens: peek_tick (every 0.5 s) saw an empty queue and an idle agent here and
+        # started show_tab in this exclusive worker group, which cancelled this worker - on a slow PC the
+        # message was lost (gone from the queue, the session file and the input).
+        self._starting_queued, started = True, False
+        try:
+            self._file_queue(sid, text, add=False)   # it is sent now: opening the session must not restore it too
+            if sid != self.sid and not await self.open_session_safely(sid):
+                started = True                       # handled: it goes back into the input
+                self.restore_input([text])
+                self.notify("The queued message could not start: its session didn't open. It is back in the input.",
+                            severity="error")
+                return
+            if self.view_sid == sid:
+                await self.leave_peek()
+            await self.on_prompt_submitted(None, queued=text)
+            started = True
+        finally:
+            self._starting_queued = False
+            if not started:                          # cancelled before it was sent: keep it queued
+                self._session_queue.insert(0, (sid, text))
+                self._file_queue(sid, text, add=True)
         await self.refresh_session_tabs(force=True)
 
     async def peek_tick(self):
