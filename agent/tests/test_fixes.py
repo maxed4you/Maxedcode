@@ -239,7 +239,7 @@ class EscTakeBackTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list(agent.steer_queue), [])
                 self.assertEqual(users(), ["❯ first"])
                 await pilot.press("escape")   # no answer yet: the turn is rolled back
-                await pilot.pause(0.2)
+                await until(lambda: agent.busy is None and prompt.text == "first\nsecond")
                 self.assertEqual(prompt.text, "first\nsecond")
                 self.assertIsNone(agent.busy)
                 self.assertEqual(users(), [])
@@ -248,9 +248,9 @@ class EscTakeBackTests(unittest.IsolatedAsyncioTestCase):
                 answered["v"] = True   # the answer has started: Esc is a plain interrupt
                 prompt.text = "third"
                 await pilot.press("enter")
-                await pilot.pause(0.2)
+                await until(lambda: (getattr(agent, "_retract", None) or {}).get("answered"))   # the stream began
                 await pilot.press("escape")
-                await pilot.pause(0.2)
+                await until(lambda: not agent.busy)
                 self.assertEqual(prompt.text, "")
                 self.assertEqual(users(), ["❯ third"])
                 self.assertEqual(agent.msgs[-1]["role"], "user")
@@ -792,11 +792,18 @@ class SessionTabTitleTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 agent.set_busy(None)
                 await agent.peek_tick()
-                for _ in range(30):   # the queued tab opens, then its message is sent
-                    if sent:
+                # the queued tab opens, then its message is sent (peek_tick retries every 0.5 s); up to 15 s,
+                # because a slow CI runner needed more than 3
+                for _ in range(150):
+                    if sent and agent.view_sid is None:
                         break
                     await pilot.pause(0.1)
-                self.assertEqual(sent, [(queued_sid, "Add dark mode")])
+                errors = app_module.HOME / "ui_errors.log"
+                why = (f"busy={agent.busy!r} queue={agent.queue!r} draining={agent._draining_queue!r} "
+                       f"worker={agent.worker and agent.worker.state} session_queue={agent._session_queue!r} "
+                       f"input={agent.query_one('#inp').text!r}" + chr(10)
+                       + (errors.read_text(encoding="utf-8")[-3000:] if errors.exists() else "no ui_errors.log"))
+                self.assertEqual(sent, [(queued_sid, "Add dark mode")], why)   # a failure says what held it
                 self.assertEqual((agent.sid, agent.view_sid), (queued_sid, None))
                 # sent once: not also restored into the input from the session file
                 self.assertNotIn("Add dark mode", agent.query_one("#inp").text)
