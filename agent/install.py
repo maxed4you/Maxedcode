@@ -948,6 +948,7 @@ rem maxed: the agent in the window you typed it in, working in the folder you ar
 rem   maxed                   the terminal agent        maxed --print "prompt"   headless
 rem   maxed app               the app window            maxed configure          change the model server
 rem   maxed shortcuts         make the desktop / Start shortcuts again
+rem   maxed uninstall         remove this install (--purge: also chats and settings)
 rem setlocal: PY does not leak into the caller's CMD; the caller's code page comes back on exit.
 rem goto, not ( ) blocks: a ")" in the prompt would end a block.
 setlocal
@@ -958,6 +959,7 @@ set "PY={py}"
 if not exist "%PY%" set "PY=python"
 if /i "%~1"=="configure" goto configure
 if /i "%~1"=="shortcuts" goto shortcuts
+if /i "%~1"=="uninstall" goto uninstall
 "%PY%" "%~dp0..\local_agent.py" %*
 set "RC=%errorlevel%"
 goto done
@@ -974,7 +976,14 @@ exit /b %RC%
 :app
 call "%~dp0..\desktop\maxedcode-app.bat"
 exit /b 0
+:uninstall
+rem This file is deleted while it runs: one line, and (goto) leaves it without reading it again (exit /b alone
+rem printed "The system cannot find the path specified" twice).
+"%PY%" "%~dp0..\install.py" --uninstall %2 %3 & chcp %CP% >nul & (goto) 2>nul & exit /b
 '''
+
+# double-click remover; one line, since maxed.bat deletes this file while it runs
+UNINSTALL_BAT = '@"{py}" "%~dp0..\\install.py" --uninstall %* & pause & (goto) 2>nul' + chr(10)   # CR: write_text
 
 README = """maxedcode
 =========
@@ -1013,9 +1022,9 @@ BROWSER EXTENSION (the agent in your own Chrome / Edge)
   After an update click the round arrow on the extension card in chrome://extensions once.
 
 UPDATE: run the installer again (same folder).
-UNINSTALL: turn the browser off (app: Settings - maxedcode - Browser), then delete this folder, the four
-  shortcuts (desktop and Start menu), the program\\bin entry in your user PATH, the folder
-  {home}-app, and {home} if you do not need your chats any more.
+UNINSTALL: type  maxed uninstall  (or double-click program\\bin\\uninstall.bat). It removes this folder, its
+  shortcuts, its PATH entry and the browser bridge; your chats and settings in {home} stay.
+  maxed uninstall --purge  removes them too. Installed with npm? maxedcode uninstall  also removes the npm package.
 """
 
 PROGRAM = "program"          # the folder with everything but the two launchers and README.txt
@@ -1039,6 +1048,7 @@ def write_launchers(dest):
     root = dest.parent
     files = {root / "maxedcode CLI.bat": LAUNCH, dest / "bin" / "maxed.bat": MAXED,
              dest / "bin" / "configure.bat": CONFIGURE, dest / "bin" / "shortcuts.bat": SHORTCUTS,
+             dest / "bin" / "uninstall.bat": UNINSTALL_BAT,
              root / "README.txt": README.replace("{root}", str(root)).replace("{home}", str(DATA_DIR))}
     if (dest / "desktop" / "maxedcode-app.bat").exists():
         files[root / "maxedcode app.bat"] = APP_LAUNCH
@@ -1291,6 +1301,131 @@ def start_hints(dest, links=True):
     say(f"how it works:   {root / 'README.txt'}")
 
 
+# ---------- uninstall: only what this install made, nothing of another install ----------
+
+ROOT_FILES = ("maxedcode app.bat", "maxedcode CLI.bat", "README.txt")
+
+
+def _inside(path, root):
+    """path (may have %VARS% and quotes) lies in root."""
+    with suppress(Exception):
+        p = Path(os.path.expandvars(str(path).strip().strip('"'))).resolve()
+        return p == root.resolve() or root.resolve() in p.parents
+    return False
+
+
+def uninstall_root():
+    """The install folder to remove: --dir, else the one this install.py belongs to, else the default one."""
+    if ARGS.dir:
+        return Path(ARGS.dir).expanduser().resolve()
+    if HERE.name.lower() == PROGRAM and not is_checkout(HERE):
+        return HERE.parent
+    return DEFAULT_DIR
+
+
+def remove_shortcuts(root):
+    """Desktop and Start shortcuts that start something in root -> their names. Another install's stay."""
+    ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $sh=New-Object -COM WScript.Shell;"
+          "foreach($f in 'Desktop','Programs'){ $d=[Environment]::GetFolderPath($f);"
+          "Get-ChildItem -LiteralPath $d -Filter 'maxedcode*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {"
+          "Write-Output ($_.FullName + '|' + $sh.CreateShortcut($_.FullName).TargetPath) } }")
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
+    gone = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        lnk, _, target = line.strip().partition("|")
+        if target and _inside(target, root):
+            with suppress(OSError):
+                Path(lnk).unlink()
+                gone.append(Path(lnk).stem)
+    return gone
+
+
+def remove_from_path(root):
+    """User PATH entries inside root (program\\bin) -> how many were removed."""
+    import ctypes
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as k:
+        try:
+            cur, kind = winreg.QueryValueEx(k, "Path")
+        except FileNotFoundError:
+            return 0
+        parts = [p for p in str(cur).split(";") if p.strip()]
+        keep = [p for p in parts if not _inside(p, root)]
+        if keep == parts:
+            return 0
+        winreg.SetValueEx(k, "Path", 0, kind, ";".join(keep))
+    with suppress(Exception):   # new windows see the shorter PATH
+        ctypes.windll.user32.SendMessageTimeoutW(ctypes.c_void_p(0xFFFF), 0x1A, ctypes.c_void_p(0),
+                                                 ctypes.c_wchar_p("Environment"), 2, 5000,
+                                                 ctypes.byref(ctypes.c_size_t()))
+    return len(parts) - len(keep)
+
+
+def remove_bridge(root):
+    """The browser bridge, when it points at this install's host.py -> True when it was removed."""
+    launcher = Path.home() / ".maxedcode-app" / "browser" / "host.bat"
+    with suppress(OSError):
+        host = re.search(r'"([^"]*host\.py)"', launcher.read_text(encoding="utf-8"))
+        if host and _inside(host.group(1), root):
+            r = subprocess.run([sys.executable, "-c", "from maxedcode.chrome import unregister; unregister()"],
+                               cwd=str(root / PROGRAM), capture_output=True, text=True)
+            return r.returncode == 0
+    return False
+
+
+def remove_files(root):
+    """program\\ and the root files setup wrote; the root itself only when nothing else is left in it
+    (--dir C:\\tools may hold other things). -> paths that could not be removed (a running window holds them)."""
+    os.chdir(Path.home())                 # a cwd inside root would hold the folder
+    left = []
+    shutil.rmtree(root / PROGRAM, onerror=lambda f, p, e: left.append(p))
+    for name in ROOT_FILES:
+        with suppress(FileNotFoundError):
+            try:
+                (root / name).unlink()
+            except OSError:
+                left.append(str(root / name))
+    with suppress(OSError):
+        root.rmdir()                      # only when empty
+    return left
+
+
+def run_uninstall():
+    """--uninstall: the program, its shortcuts, PATH entry and browser bridge. Chats, memory and settings
+    (~\\.maxedcode) stay unless --purge. -> exit code."""
+    root = uninstall_root()
+    if is_checkout(root / PROGRAM) or is_checkout(root) or not (root / PROGRAM / "maxedcode" / "config.py").exists():
+        say(f"no maxedcode install in {root} (nothing removed)", "warn")
+        return 1 if ARGS.dir else 0
+    print(c("\n  maxedcode - uninstall\n  ---------------------", "36;1"))
+    print(f"    removes:  {root} (the program, its launchers), its shortcuts, its PATH entry, its browser bridge")
+    print(f"    {'removes' if ARGS.purge else 'keeps'}:    {DATA_DIR} (chats, memory, settings)"
+          + ("" if ARGS.purge else "  - add --purge to remove them too"))
+    if not ARGS.yes and sys.stdin.isatty() and input("\n  Uninstall? (y/N) ").strip().lower() not in ("y", "yes"):
+        say("cancelled, nothing was removed")
+        return 1
+    bridge = remove_bridge(root)
+    links = remove_shortcuts(root)
+    try:
+        paths = remove_from_path(root)
+    except OSError as e:
+        paths = 0
+        say(f"PATH not changed: {e}", "warn")
+    left = remove_files(root)
+    with suppress(OSError):
+        (DATA_DIR / "npm-install.json").unlink()      # the npm launcher's note of this install
+    if ARGS.purge:
+        for d in (DATA_DIR, Path.home() / ".maxedcode-app"):
+            shutil.rmtree(d, ignore_errors=True)
+    say(f"shortcuts removed: {', '.join(links) or 'none'}; PATH entries removed: {paths}"
+        + ("; browser bridge removed" if bridge else ""), "ok")
+    if left:
+        say(f"{len(left)} file(s) are in use (close the maxedcode window and terminals), then delete {root}", "warn")
+        return 1
+    say(f"maxedcode is removed{'' if ARGS.purge else f'; your chats and settings are still in {DATA_DIR}'}", "ok")
+    return 0
+
+
 def parse():
     p = argparse.ArgumentParser(description="maxedcode installer")
     p.add_argument("--dir", help=f"install folder (default {DEFAULT_DIR})")
@@ -1308,6 +1443,9 @@ def parse():
     p.add_argument("--console", action="store_true", help="the console wizard instead of the setup window")
     p.add_argument("--first-run", action="store_true",
                    help="first start of a copy without config.json (a git clone): server, model, packages")
+    p.add_argument("--uninstall", action="store_true",
+                   help="remove the install (this one, or --dir): program, shortcuts, PATH entry, browser bridge")
+    p.add_argument("--purge", action="store_true", help="with --uninstall: also remove chats, memory and settings")
     a = p.parse_args()
     if a.first_run:
         a.configure = True
@@ -1326,6 +1464,8 @@ def main():
     if ARGS.launchers:
         refresh_launchers(HERE)
         return
+    if ARGS.uninstall:
+        sys.exit(run_uninstall())
     if store_python() and not ARGS.configure:
         say(STORE_PYTHON, "err")
         sys.exit(1)

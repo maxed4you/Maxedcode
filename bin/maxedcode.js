@@ -49,6 +49,20 @@ function install (dir, wizard) {
   fs.writeFileSync(STAMP, JSON.stringify({ version: pkg.version, dir: dir }, null, 2))
 }
 
+// maxedcode uninstall [--purge]: the program (install.py --uninstall asks first), then this npm package.
+// npm runs no uninstall scripts since v7, so npm uninstall alone would leave the program, shortcuts and PATH.
+function uninstall (dir, rest) {
+  if (fs.existsSync(path.join(dir, 'program', 'install.py'))) {
+    const args = [path.join(ROOT, 'agent', 'install.py'), '--uninstall', '--dir', dir].concat(rest)
+    const r = spawnSync(findPython(), args, { stdio: 'inherit' })
+    if (r.status !== 0) process.exit(r.status === null ? 1 : r.status)   // cancelled: the npm package stays too
+  }
+  fs.rmSync(STAMP, { force: true })
+  console.log('\n  maxedcode: removing the npm package (npm uninstall -g maxedcode) ...')
+  const r = spawnSync('npm uninstall -g maxedcode', { stdio: 'inherit', shell: true })
+  process.exit(r.status === null ? 1 : r.status)
+}
+
 // One argument for cmd.exe -> a .bat -> Python's command line parser
 function quote (a) {
   if (a !== '' && !/[\s"&|<>^()%!,;=]/.test(a)) return a
@@ -63,6 +77,7 @@ function main () {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
   const dir = process.env.MAXEDCODE_DIR || stamp.dir || path.join(local, 'Programs', 'maxedcode')
   const maxed = path.join(dir, 'program', 'bin', 'maxed.bat')
+  if (args[0] === 'uninstall') return uninstall(dir, args.slice(1))
   if (args[0] === 'setup') {                       // maxedcode setup: the setup wizard again
     install(dir, true)
     args = args.slice(1)

@@ -110,6 +110,7 @@ Use the **maxedcode app** or **maxedcode CLI** shortcut (desktop and Start menu)
 | `maxed --print "fix the failing test"` | one answer, no UI (`--output-format json` / `stream-json`) |
 | `maxed configure` | change the model server or model |
 | `maxed shortcuts` | bring back deleted shortcuts |
+| `maxed uninstall` | remove maxedcode (`--purge` also removes chats and settings) |
 
 After an npm install, `maxedcode` works the same way as `maxed` (`maxedcode app`, `maxedcode --print ...`). Open a
 **new** terminal window after installing, so it sees the updated PATH.
@@ -164,9 +165,13 @@ guide shows, with screenshots, which folder to load in `chrome://extensions` (De
 
 ## Update / uninstall
 
-- **Update:** run the install command again (npm: `npm update -g maxedcode`, then `maxedcode`).
-- **Uninstall:** delete `%LOCALAPPDATA%\Programs\maxedcode` and the two shortcuts (npm: also
-  `npm uninstall -g maxedcode`). Also delete `%USERPROFILE%\.maxedcode` if you don't need your chats any more.
+- **Update:** run the install command again (npm: `npm update -g maxedcode`, then `maxedcode`). Your chats and
+  settings stay.
+- **Uninstall:** `maxed uninstall` (or `program\bin\uninstall.bat` in the install folder). It removes the program,
+  its shortcuts, its PATH entry and the browser bridge, and keeps your chats and settings in `%USERPROFILE%\.maxedcode`;
+  `maxed uninstall --purge` removes those too.
+- **Installed with npm:** `maxedcode uninstall` does the same and then removes the npm package. (`npm uninstall -g
+  maxedcode` alone would leave the program behind: npm runs no uninstall scripts.)
 
 ## Run from source
 

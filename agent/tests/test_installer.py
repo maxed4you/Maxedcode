@@ -123,7 +123,7 @@ class StrataDefaultTests(unittest.TestCase):
             install.write_launchers(dest)
             root = sorted(f.name for f in Path(d).iterdir())
             self.assertEqual(sorted(f.name for f in (dest / "bin").iterdir()),
-                             ["configure.bat", "maxed.bat", "shortcuts.bat"])
+                             ["configure.bat", "maxed.bat", "shortcuts.bat", "uninstall.bat"])
         self.assertEqual(root, ["README.txt", "maxedcode CLI.bat", "maxedcode app.bat", "program"])
 
     def test_path_moves_to_bin(self):
@@ -174,6 +174,52 @@ class StrataDefaultTests(unittest.TestCase):
         self.assertTrue(install.is_strata(install.candidates("127.0.0.1:8080")[0]))
         self.assertTrue(install.is_strata("http://localhost:8080/v1/"))
         self.assertFalse(install.is_strata("http://127.0.0.1:1234/v1"))
+
+
+class UninstallTests(unittest.TestCase):
+    """maxed uninstall removes only what this install made."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()) / "maxedcode"
+        (self.root / "program" / "maxedcode").mkdir(parents=True)
+        (self.root / "program" / "maxedcode" / "config.py").write_text("", encoding="utf-8")
+        (self.root / "program" / "bin").mkdir()
+        (self.root / "program" / "bin" / "maxed.bat").write_text("@echo off", encoding="utf-8")
+        for name in install.ROOT_FILES:
+            (self.root / name).write_text("x", encoding="utf-8")
+        install.ARGS = argparse.Namespace(dir=str(self.root), yes=True, purge=False)
+
+    def test_inside_knows_the_install_folder(self):
+        self.assertTrue(install._inside(str(self.root / "program" / "bin"), self.root))
+        self.assertTrue(install._inside(f'"{self.root}\\program\\desktop\\app\\maxedcode.exe"', self.root))
+        self.assertFalse(install._inside(str(self.root.parent / "maxedcode-other" / "program"), self.root))
+
+    def test_files_go_and_a_shared_folder_keeps_the_rest(self):
+        (self.root / "notes.txt").write_text("mine", encoding="utf-8")   # --dir C:\tools: not ours
+        self.assertEqual(install.remove_files(self.root), [])
+        self.assertEqual([p.name for p in self.root.iterdir()], ["notes.txt"])
+        (self.root / "notes.txt").unlink()
+        install.remove_files(self.root)
+        self.assertFalse(self.root.exists())
+
+    def test_run_removes_this_install_and_keeps_the_data(self):
+        with patch.object(install, "remove_bridge", return_value=False), \
+                patch.object(install, "remove_shortcuts", return_value=["maxedcode CLI"]) as links, \
+                patch.object(install, "remove_from_path", return_value=1) as path, \
+                patch.object(install, "DATA_DIR", self.root.parent / "data"), redirect_stdout(io.StringIO()):
+            (self.root.parent / "data").mkdir()
+            self.assertEqual(install.run_uninstall(), 0)
+        self.assertFalse(self.root.exists())
+        self.assertTrue((self.root.parent / "data").exists())            # chats stay without --purge
+        links.assert_called_once_with(self.root)
+        path.assert_called_once_with(self.root)
+
+    def test_a_folder_without_an_install_is_left_alone(self):
+        (self.root / "program" / "maxedcode" / "config.py").unlink()
+        with patch.object(install, "remove_files") as files, redirect_stdout(io.StringIO()):
+            self.assertEqual(install.run_uninstall(), 1)
+        files.assert_not_called()
+        self.assertTrue(self.root.exists())
 
 
 if __name__ == "__main__":
