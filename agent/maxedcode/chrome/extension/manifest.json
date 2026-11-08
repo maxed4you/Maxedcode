@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "short_name": "maxedcode",
+  "version": "1.4.6",
+  "description": "__MSG_description__",
+  "default_locale": "en",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs2FGrnBV7jvMkGKJLl9fxw+Si/A/45NtCzpCv1PwbpkmSY6DZIG0wNm+zHfa7dt6Cy89hR1fs51/QGY5TLKKVxhqFixkKbFU3uZpcsuAjfnSDr70705+lcfzSnjRgSNhD+4zgcm00mmZbphTgapBHQnC/dWLJeBuavoV3B3tiVXcWA/YSEaH4rehiXRwrM4SEUstpn1T8ZUZ5vsQyxLSgAMG0ngNiAZxiCImVkCgxUKoRSHt0b+stTfDiOLwN3vOm1qRTxlzRMZNFDk90vyfXsg2uruQTB8dJa7blu45aaBe41AT8BpfJdrex8J6MgXfjlZAIVRnS7L0NNHGodH4/wIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "__MSG_actionTitle__",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+E"
+      },
+      "description": "__MSG_openPanel__"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "tabs",
+    "tabGroups",
+    "storage",
+    "alarms",
+    "sidePanel",
+    "debugger"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>maxedcode browser setup</title>
+<style>
+  :root { --bg: #faf9f5; --card: #ffffff; --ink: #1f1e1d; --muted: #6b6a68; --line: #e3e1db; --accent: #d97757; --code: #f1efe8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1f1e1d; --card: #262624; --ink: #eeeceb; --muted: #a3a19d; --line: #3a3936; --code: #30302e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; }
+  .lead { color: var(--muted); margin: 0 0 32px; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; margin: 0 0 18px; }
+  .step h2 { display: flex; align-items: center; gap: 12px; font-size: 20px; margin: 0 0 10px; }
+  .num { flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 16px; font-weight: 700; }
+  .step p { margin: 8px 0; }
+  .step img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; margin: 14px 0 4px; }
+  code, .key { background: var(--code); border-radius: 6px; padding: 1px 6px; font-family: Consolas, monospace; font-size: 14px; }
+  .key { border: 1px solid var(--line); font-family: inherit; }
+  .copy { display: flex; gap: 8px; align-items: stretch; margin: 10px 0; }
+  .copy code { flex: 1; padding: 9px 12px; font-size: 14px; word-break: break-all; display: flex; align-items: center; }
+  button { font: inherit; font-size: 14px; font-weight: 600; border: 0; border-radius: 8px; padding: 0 16px; background: var(--accent); color: #fff; cursor: pointer; min-height: 40px; }
+  button:active { transform: translateY(1px); }
+  .note { color: var(--muted); font-size: 14px; }
+  .warn { background: var(--code); border-radius: 8px; padding: 8px 12px; margin: 12px 0; font-size: 15px; }
+  /* a drawing of the Windows folder dialog: it is the system's, not the browser's, so there is no screenshot */
+  .dialog { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 14px 0 4px; font-size: 13px; background: var(--card); }
+  .dialog .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--code); }
+  .dialog .addr { flex: 1; border: 2px solid var(--accent); border-radius: 6px; padding: 5px 8px; background: var(--card); font-family: Consolas, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .dialog .files { height: 70px; padding: 10px 14px; color: var(--muted); }
+  .dialog .foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+  .dialog .btn { border: 1px solid var(--line); border-radius: 6px; padding: 5px 16px; }
+  .dialog .btn.main { border: 2px solid var(--accent); font-weight: 600; }
+  .tag { display: inline-block; background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px; text-align: center; line-height: 20px; font-size: 12px; font-weight: 700; margin-right: 4px; }
+  h3 { font-size: 17px; margin: 32px 0 8px; }
+  ul { padding-left: 20px; margin: 6px 0; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Connect your browser to maxedcode</h1>
+  <p class="lead">Once, about two minutes. After this the maxedcode agent can read and use pages in your own Chrome or
+    Edge, where you are already signed in. Chrome does not let programs install extensions by themselves, so these
+    few clicks are yours.</p>
+
+  <section class="step">
+    <h2><span class="num">1</span>Open the Extensions page</h2>
+    <p>Copy this address, click your browser's address bar (where you type websites), paste it and press <span class="key">Enter</span>:</p>
+    <div class="copy"><code id="page">chrome://extensions</code><button data-copy="page">Copy</button></div>
+    <p class="note">Or use the menu: the three dots <b>⋮</b> at the top right → <b>Extensions</b> → <b>Manage Extensions</b>.
+      In Microsoft Edge the address is <code>edge://extensions</code>.</p>
+    <p class="warn">Not the developer tools (<span class="key">F12</span>, the panel full of code): this is a normal page
+      called <b>Extensions</b>.</p>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">2</span>Turn on “Developer mode”</h2>
+    <p>The switch at the top right of the Extensions page. It only lets you add an extension from a folder on your computer.</p>
+    <img src="step-2-developer-mode.png" alt="The Developer mode switch at the top right of the Extensions page">
+    <p class="note">In Edge the switch is in the left column, near the bottom.</p>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">3</span>Click “Load unpacked”</h2>
+    <p>New buttons appear under the title. Click the first one. A window to choose a folder opens.</p>
+    <img src="step-3-load-unpacked.png" alt="The Load unpacked button at the top left">
+  </section>
+
+  <section class="step">
+    <h2><span class="num">4</span>Choose the maxedcode extension folder</h2>
+    <p>Copy the folder path:</p>
+    <div class="copy"><code id="folder">C:\Users\YourName\AppData\Local\Programs\maxedcode\program\maxedcode\chrome\extension</code><button data-copy="folder">Copy</button></div>
+    <p class="note" id="folder-note">Replace <b>YourName</b> with your Windows user name (the folder name in
+      <code>C:\Users</code>). If you installed maxedcode into another folder, it is <code>program\maxedcode\chrome\extension</code>
+      inside it (README.txt there shows the full path). Opened from maxedcode's Settings, this page shows the exact path.</p>
+    <p>In the folder window:</p>
+    <p><span class="tag">a</span>click the address bar at the top, paste the path (<span class="key">Ctrl</span> + <span class="key">V</span>) and press <span class="key">Enter</span>;<br>
+       <span class="tag">b</span>click <b>Select Folder</b>.</p>
+    <div class="dialog" aria-hidden="true">
+      <div class="bar"><span>←&nbsp;→&nbsp;↑</span><span class="tag">a</span><div class="addr" id="addr">C:\Users\YourName\AppData\Local\Programs\maxedcode\program\maxedcode\chrome\extension</div></div>
+      <div class="files">_locales &nbsp; icons &nbsp; background.js &nbsp; manifest.json &nbsp; page.js …</div>
+      <div class="foot"><span class="tag">b</span><span class="btn main">Select Folder</span><span class="btn">Cancel</span></div>
+    </div>
+    <p class="note">Choose the <b>extension</b> folder itself, the one with <code>manifest.json</code> in it, not a file inside it.</p>
+    <p class="warn"><b>“Manifest file is missing or unreadable”</b> with <code>~\Downloads</code> (or another folder) in
+      it: the path was pasted but <span class="key">Enter</span> was not pressed, so the window still showed the old
+      folder. Paste, press <span class="key">Enter</span>, check that the list shows <code>manifest.json</code>, then
+      click <b>Select Folder</b>. Or paste the path into the <b>Folder:</b> box at the bottom instead and click
+      <b>Select Folder</b> right away.<br>
+      <b>“No items match your search”</b> or <b>“not found”</b>: the path went into the search box at the
+      top right. Paste it into the <b>address bar</b> on the left of it (click the empty space next to the folder names
+      there first). <b>“Windows can't find …YourName…”</b>: the path still has the example user name in it.</p>
+    <p><b>Without typing a path:</b> open the folder in Explorer (in maxedcode: <b>Settings → maxedcode → Browser →
+      Show the folder</b>; in a terminal: <code>python -m maxedcode.chrome reveal</code>) and drag the selected
+      <b>extension</b> folder with the mouse onto the Extensions page. Developer mode has to be on.</p>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">5</span>Done: check it</h2>
+    <p>The card <b>maxedcode in your browser</b> appears on the Extensions page.</p>
+    <img src="step-5-done.png" alt="The maxedcode extension card on the Extensions page">
+    <p>Pin its icon so you always see it: the puzzle piece 🧩 to the right of the address bar → the pin next to
+      <b>maxedcode in your browser</b>. Click the icon: <b>Connected to maxedcode</b> with a green dot means everything works.</p>
+  </section>
+
+  <h3>If something is off</h3>
+  <ul>
+    <li><b>“Not connected”</b> in the icon: in maxedcode open <b>Settings → maxedcode → Browser</b> and turn the switch on
+      (in a terminal: <code>python -m maxedcode.chrome on</code>), then click the round arrow ⟳ on the extension card.</li>
+    <li><b>After a maxedcode update</b> click ⟳ on the card once, so the browser loads the new files.</li>
+    <li><b>Leave Developer mode on.</b> New Chrome versions turn off extensions loaded from a folder when it is off.</li>
+    <li><b>To stop the agent</b> at any moment: <b>Stop</b> at the bottom of the tab it works in, or untick the switch in the
+      extension's icon. <b>Remove</b> on the card uninstalls it.</li>
+    <li>The agent works in its own tabs (an orange <b>maxedcode</b> tab group) and never replaces the page you are on.
+      In Manual and Accept edits maxedcode asks before every browser task. It does not sign in, pay or solve CAPTCHAs
+      for you: it stops and tells you what to do.</li>
+  </ul>
+</main>
+<script>
+  // Opened from disk (Settings → Browser, or double-click): show this computer's real extension folder.
+  if (location.protocol === 'file:') {
+    var path = decodeURIComponent(location.pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\/guide\/[^/]*$/, '/extension').replace(/\//g, '\\')
+    document.getElementById('folder').textContent = path
+    document.getElementById('addr').textContent = path
+    document.getElementById('folder-note').textContent = 'This is the folder on this computer.'
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
+    b.onclick = function () {
+      navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent).then(function () {
+        b.textContent = 'Copied'
+        setTimeout(function () { b.textContent = 'Copy' }, 1500)
+      })
+    }
+  })
+</script>
+</body>
+</html>

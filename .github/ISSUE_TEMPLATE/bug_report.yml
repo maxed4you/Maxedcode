@@ -1,0 +1,38 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked or did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and server
+      placeholder: "Qwen3 30B IQ3 on llama.cpp, 32k context"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [CLI (maxed), App window, Headless (--print), Browser extension, Setup]
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: Install method and Windows version
+      placeholder: "PowerShell one-liner / npm / setup zip, Windows 11 24H2"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Setup problems: %TEMP%\maxedcode-setup.log. Agent problems: the session file from
+        %USERPROFILE%\.maxedcode\sessions\. Remove anything private first.
+      render: text

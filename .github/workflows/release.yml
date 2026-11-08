@@ -1,0 +1,67 @@
+# A v* tag (git tag v1.0.0 && git push origin v1.0.0) builds Maxedcode_setup.zip and attaches it to the release,
+# then publishes the npm package with the tag's version (only when the NPM_TOKEN secret is set).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  setup-zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer tests
+        if: hashFiles('agent/tests/test_installer.py') != ''
+        shell: pwsh
+        env:
+          MAXEDCODE_OFFLINE: "1"
+        run: |
+          python -m pip install -q pytest
+          cd agent
+          python -m pytest -q tests/test_installer.py
+      - name: Build Maxedcode_setup.zip and maxedcode.zip
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1
+          # the program alone (installer/app: no tests, no docs) for install.ps1, as opencode ships a built package
+          Compress-Archive -Path installer/app/* -DestinationPath installer/maxedcode.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Maxedcode_setup
+          path: |
+            installer/Maxedcode_setup.zip
+            installer/maxedcode.zip
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer/Maxedcode_setup.zip
+            installer/maxedcode.zip
+          generate_release_notes: true
+
+  npm:
+    needs: setup-zip
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish to npm
+        if: env.NODE_AUTH_TOKEN != ''
+        run: |
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npm publish --access public

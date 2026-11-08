@@ -1,0 +1,182 @@
+{
+  "name": {
+    "message": "maxedcode в браузере"
+  },
+  "description": {
+    "message": "Даёт локальному агенту maxedcode читать вкладки и работать в них, и чат с ним в боковой панели. Никуда больше ничего не уходит."
+  },
+  "working": {
+    "message": "maxedcode работает в этой вкладке"
+  },
+  "stop": {
+    "message": "Стоп"
+  },
+  "connected": {
+    "message": "Подключено к maxedcode"
+  },
+  "notConnected": {
+    "message": "Нет связи с maxedcode"
+  },
+  "notConnectedSub": {
+    "message": "Включи браузер в maxedcode: Настройки → maxedcode → Браузер."
+  },
+  "offBanner": {
+    "message": "Сейчас maxedcode не видит браузер и ничего в нём не делает."
+  },
+  "turnOn": {
+    "message": "Включить"
+  },
+  "allow": {
+    "message": "Разрешить maxedcode пользоваться браузером"
+  },
+  "allowSub": {
+    "message": "Агент читает страницы и нажимает или печатает в них, когда это нужно для задачи. В режиме «Спрашивать» сначала спрашивает."
+  },
+  "newChat": {
+    "message": "Новый чат"
+  },
+  "settings": {
+    "message": "Настройки"
+  },
+  "emptyHead": {
+    "message": "Спроси про эту страницу или что сделать в браузере"
+  },
+  "emptySub": {
+    "message": "Делает твой локальный maxedcode: читает страницу, нажимает и печатает. Чаты видны и в приложении maxedcode."
+  },
+  "placeholder": {
+    "message": "Спроси про страницу или попроси что-то сделать…"
+  },
+  "send": {
+    "message": "Отправить"
+  },
+  "plan": {
+    "message": "План"
+  },
+  "ask": {
+    "message": "Спрашивать"
+  },
+  "auto": {
+    "message": "Авто"
+  },
+  "planSub": {
+    "message": "только смотрит"
+  },
+  "askSub": {
+    "message": "спрашивает перед нажатиями и вводом"
+  },
+  "autoSub": {
+    "message": "действует без вопросов"
+  },
+  "thinking": {
+    "message": "Думает"
+  },
+  "failed": {
+    "message": "maxedcode остановился с ошибкой."
+  },
+  "stopped": {
+    "message": "Остановлено."
+  },
+  "apHead": {
+    "message": "Разрешить?"
+  },
+  "apYes": {
+    "message": "Да"
+  },
+  "apNo": {
+    "message": "Нет"
+  },
+  "apAlways": {
+    "message": "Всегда"
+  },
+  "apAllowed": {
+    "message": "Разрешено"
+  },
+  "apDenied": {
+    "message": "Отклонено"
+  },
+  "sTask": {
+    "message": "Задача в браузере"
+  },
+  "sRead": {
+    "message": "Читает страницу"
+  },
+  "sShot": {
+    "message": "Скриншот"
+  },
+  "sClick": {
+    "message": "Нажимает"
+  },
+  "sType": {
+    "message": "Печатает в"
+  },
+  "sKey": {
+    "message": "Клавиша"
+  },
+  "sScroll": {
+    "message": "Прокрутка"
+  },
+  "sOpen": {
+    "message": "Открывает"
+  },
+  "sTabs": {
+    "message": "Список вкладок"
+  },
+  "sSwitch": {
+    "message": "Другая вкладка"
+  },
+  "sBack": {
+    "message": "Назад"
+  },
+  "bigChat": {
+    "message": "Чат заполнен на {pct}%: в новом чате ответы быстрее."
+  },
+  "actionTitle": {
+    "message": "Открыть maxedcode (Ctrl+E)"
+  },
+  "openPanel": {
+    "message": "Открыть панель maxedcode"
+  },
+  "badgeOff": {
+    "message": "выкл"
+  },
+  "notStarted": {
+    "message": "maxedcode не запустился."
+  },
+  "noticeCut": {
+    "message": "Ответ упёрся в лимит длины — агент продолжает его"
+  },
+  "noticeEmpty": {
+    "message": "Модель вернула пустой ответ — спрашиваю ещё раз"
+  },
+  "noticeLoop": {
+    "message": "Агент повторялся — повторы убраны из контекста"
+  },
+  "whyWrite": {
+    "message": "меняет файл в проекте"
+  },
+  "whyRead": {
+    "message": "только читает"
+  },
+  "whyBrowser": {
+    "message": "работает в твоём браузере, где ты уже вошёл в аккаунты: может открывать страницы, нажимать и печатать"
+  },
+  "whyMcp": {
+    "message": "вызывает внешний инструмент MCP — он может что-то делать за пределами проекта"
+  },
+  "whyRun": {
+    "message": "выполняет команду"
+  },
+  "dirUp": {
+    "message": "вверх"
+  },
+  "dirDown": {
+    "message": "вниз"
+  },
+  "dirTop": {
+    "message": "в начало"
+  },
+  "dirBottom": {
+    "message": "в конец"
+  }
+}

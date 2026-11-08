@@ -1,0 +1,182 @@
+{
+  "name": {
+    "message": "maxedcode in your browser"
+  },
+  "description": {
+    "message": "Lets your local maxedcode agent read and use your tabs, and chat with it in a side panel. Nothing is sent anywhere else."
+  },
+  "working": {
+    "message": "maxedcode is working in this tab"
+  },
+  "stop": {
+    "message": "Stop"
+  },
+  "connected": {
+    "message": "Connected to maxedcode"
+  },
+  "notConnected": {
+    "message": "Not connected to maxedcode"
+  },
+  "notConnectedSub": {
+    "message": "Turn the browser on in maxedcode: Settings → maxedcode → Browser."
+  },
+  "offBanner": {
+    "message": "maxedcode cannot see or use this browser now."
+  },
+  "turnOn": {
+    "message": "Turn on"
+  },
+  "allow": {
+    "message": "Allow maxedcode to use this browser"
+  },
+  "allowSub": {
+    "message": "The agent reads pages and clicks or types in them when a task needs it. In Ask mode it asks first."
+  },
+  "newChat": {
+    "message": "New chat"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "emptyHead": {
+    "message": "Ask about this page or what to do in the browser"
+  },
+  "emptySub": {
+    "message": "Your local maxedcode does it: it reads the page, clicks and types. Chats are also in the maxedcode app."
+  },
+  "placeholder": {
+    "message": "Ask about or act on this page…"
+  },
+  "send": {
+    "message": "Send"
+  },
+  "plan": {
+    "message": "Plan"
+  },
+  "ask": {
+    "message": "Ask"
+  },
+  "auto": {
+    "message": "Auto"
+  },
+  "planSub": {
+    "message": "only looks"
+  },
+  "askSub": {
+    "message": "asks before clicks and typing"
+  },
+  "autoSub": {
+    "message": "acts without asking"
+  },
+  "thinking": {
+    "message": "Thinking"
+  },
+  "failed": {
+    "message": "maxedcode stopped with an error."
+  },
+  "stopped": {
+    "message": "Stopped."
+  },
+  "apHead": {
+    "message": "Allow this?"
+  },
+  "apYes": {
+    "message": "Yes"
+  },
+  "apNo": {
+    "message": "No"
+  },
+  "apAlways": {
+    "message": "Always"
+  },
+  "apAllowed": {
+    "message": "Allowed"
+  },
+  "apDenied": {
+    "message": "Denied"
+  },
+  "sTask": {
+    "message": "Browser task"
+  },
+  "sRead": {
+    "message": "Read the page"
+  },
+  "sShot": {
+    "message": "Screenshot"
+  },
+  "sClick": {
+    "message": "Click"
+  },
+  "sType": {
+    "message": "Type into"
+  },
+  "sKey": {
+    "message": "Press"
+  },
+  "sScroll": {
+    "message": "Scroll"
+  },
+  "sOpen": {
+    "message": "Open"
+  },
+  "sTabs": {
+    "message": "List tabs"
+  },
+  "sSwitch": {
+    "message": "Switch tab"
+  },
+  "sBack": {
+    "message": "Back"
+  },
+  "bigChat": {
+    "message": "The chat is {pct}% full: a new chat answers faster."
+  },
+  "actionTitle": {
+    "message": "Open maxedcode (Ctrl+E)"
+  },
+  "openPanel": {
+    "message": "Open the maxedcode panel"
+  },
+  "badgeOff": {
+    "message": "off"
+  },
+  "notStarted": {
+    "message": "maxedcode did not start."
+  },
+  "noticeCut": {
+    "message": "The reply hit the length limit; the agent continues it"
+  },
+  "noticeEmpty": {
+    "message": "The model returned an empty reply; asking again"
+  },
+  "noticeLoop": {
+    "message": "The agent repeated itself; the repeats were removed from the context"
+  },
+  "whyWrite": {
+    "message": "changes a file in the project"
+  },
+  "whyRead": {
+    "message": "only reads"
+  },
+  "whyBrowser": {
+    "message": "works in your own browser, where you are logged in: it can open pages, click and type"
+  },
+  "whyMcp": {
+    "message": "calls an external MCP tool, which can do things outside this project"
+  },
+  "whyRun": {
+    "message": "runs a command"
+  },
+  "dirUp": {
+    "message": "up"
+  },
+  "dirDown": {
+    "message": "down"
+  },
+  "dirTop": {
+    "message": "to the top"
+  },
+  "dirBottom": {
+    "message": "to the bottom"
+  }
+}

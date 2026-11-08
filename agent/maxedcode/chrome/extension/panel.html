@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>maxedcode</title>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="">
+    <span class="title">maxedcode</span>
+    <span class="dot" id="dot"></span>
+    <span class="grow"></span>
+    <button class="icon" id="new" data-title="newChat">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="icon" id="menu-btn" data-title="settings">
+      <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+    </button>
+  </header>
+  <div class="menu" id="menu" hidden>
+    <label class="switch-row"><input type="checkbox" id="on"><span><span data-t="allow"></span><br><span class="sub" data-t="allowSub"></span></span></label>
+  </div>
+  <div class="banner" id="banner" hidden></div>
+  <main id="log">
+    <div class="empty" id="empty">
+      <img src="icons/icon48.png" alt="">
+      <p data-t="emptyHead"></p>
+      <p class="sub" data-t="emptySub"></p>
+    </div>
+  </main>
+  <footer>
+    <div class="big" id="big" hidden><span id="big-text"></span><button id="big-new" data-t="newChat"></button></div>
+    <div class="box">
+      <textarea id="input" rows="2" data-ph="placeholder"></textarea>
+      <button class="send" id="send" data-title="send">
+        <svg viewBox="0 0 24 24" class="arrow"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+        <svg viewBox="0 0 24 24" class="square"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+      </button>
+    </div>
+    <div class="modes" id="modes">
+      <button data-mode="plan" data-t="plan"></button>
+      <button data-mode="manual" data-t="ask"></button>
+      <button data-mode="auto" data-t="auto"></button>
+      <span class="mode-sub" id="mode-sub"></span>
+    </div>
+  </footer>
+  <script src="panel.js"></script>
+</body>
+</html>

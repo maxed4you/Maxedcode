@@ -1,0 +1,51 @@
+{
+  "name": "maxedcode",
+  "version": "1.0.0",
+  "description": "A coding agent for Windows that runs on your own models: local (LM Studio, Ollama, llama.cpp, vLLM) or any OpenAI-compatible API. CLI + app window + browser extension.",
+  "keywords": [
+    "ai",
+    "agent",
+    "coding-agent",
+    "cli",
+    "llm",
+    "local-llm",
+    "ollama",
+    "lm-studio",
+    "llama.cpp",
+    "openai",
+    "windows",
+    "terminal"
+  ],
+  "homepage": "https://github.com/maxed4you/Maxedcode#readme",
+  "bugs": "https://github.com/maxed4you/Maxedcode/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxed4you/Maxedcode.git"
+  },
+  "license": "Apache-2.0",
+  "author": "maxed4you",
+  "bin": {
+    "maxedcode": "bin/maxedcode.js"
+  },
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "agent/",
+    "!agent/tests/",
+    "!agent/run_all_tests.*",
+    "!agent/settings.json",
+    "!agent/config.json",
+    "!**/__pycache__/",
+    "desktop/",
+    "!desktop/README.md",
+    "!desktop/app/maxedcode.exe",
+    "!desktop/app/maxedcode.new.exe",
+    "!desktop/app/python.txt",
+    "installer/bootstrap.ps1"
+  ]
+}

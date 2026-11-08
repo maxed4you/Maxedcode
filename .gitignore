@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Secrets / local
+.env
+*.key
+*.token
+secrets/
+
+# The agent's local data (never in the repository)
+data/
+sessions/
+input_history.jsonl
+mcp.json
+.agent-home/
+
+# Editors and tools
+.vscode/
+.claude/
+*.log
+Thumbs.db
+
+# Local indexes / caches / keys
+*.db
+*.dpapi
+.pytest_cache/
+agent/maxed.bat
+agent/configure.bat
+agent/config.json
+
+# Test output / scratch
+.testout.txt
+.testhome/
+scratch_*.py
+*.bak*
+
+# Installer build output (installer\build.ps1 rebuilds it on every run)
+installer/app/
+installer/Maxedcode_setup.zip
+installer/maxedcode.zip
+installer/dist/
+
+# npm package build output
+node_modules/
+*.tgz
+
+# Design-tool cache
+.impeccable/
+
+# maxedcode app window: the Python the installer found (per machine); the exe build-exe.ps1 builds and signs per PC
+desktop/app/maxedcode.exe
+desktop/app/maxedcode.new.exe
+desktop/app/python.txt
+
+# The author's own notes, sync buttons and settings: they stay on the author's disk, never on GitHub
+dev/
+CLAUDE.md
+.maxedcode/
+docs/
+agent/settings.json
+desktop/README.md

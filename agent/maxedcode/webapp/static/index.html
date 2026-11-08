@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>maxedcode</title>
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app" class="home">
+  <aside id="side">
+    <div class="brand">
+      <span class="mark">&gt;_</span><span class="brand-name">maxedcode</span>
+      <span class="grow"></span>
+      <button id="toggle-side" class="icon-btn" data-icon="panelLeft" data-t-title="toggleSide"></button>
+    </div>
+    <button id="new-chat" class="new-btn" data-t-title="newChatKey"><span data-icon="plusCircle"></span><span class="label" data-t="newChat"></span></button>
+    <div class="side-head">
+      <span data-t="workspaces" class="side-head-title"></span>
+      <button id="search-btn" class="icon-btn" data-icon="search" data-t-title="search"></button>
+      <button id="sort-btn" class="icon-btn" data-icon="sliders" data-t-title="sort"></button>
+      <button id="add-folder" class="icon-btn" data-icon="folderPlus" data-t-title="addFolder"></button>
+    </div>
+    <input id="search" class="side-search" hidden spellcheck="false">
+    <div id="chats"></div>
+    <div class="rail">
+      <button id="rail-new" class="icon-btn" data-icon="plusCircle" data-t-title="newChat"></button>
+      <button id="rail-folder" class="icon-btn" data-icon="folderPlus" data-t-title="addFolder"></button>
+      <button id="rail-search" class="icon-btn" data-icon="search" data-t-title="search"></button>
+    </div>
+    <div id="side-resize" class="resize"></div>
+    <button id="open-settings" class="side-foot"><span data-icon="gear"></span><span class="label" data-t="settings"></span></button>
+  </aside>
+
+  <main id="main">
+    <header id="top">
+      <div class="top-left">
+        <div class="title-row"><div id="chat-title"></div><button id="chat-folder" class="chat-folder"><span data-icon="folder"></span><span id="chat-folder-name"></span></button></div>
+        <nav id="views" class="views">
+          <button data-view="chat" class="on" data-t="viewChat"></button>
+          <button data-view="trace" data-t="viewTrace"></button>
+        </nav>
+      </div>
+      <span class="grow"></span>
+      <button id="changes-btn" class="changes-btn" hidden></button>
+      <div id="open-in" class="split">
+        <button id="open-default" class="split-main" data-t-title="explorer"><span data-icon="folderColor"></span></button>
+        <button id="open-menu" class="split-more" data-icon="chevron"></button>
+      </div>
+      <button id="more-btn" class="icon-btn" data-icon="dots" data-t-title="moreActions"></button>
+      <button id="panel-btn" class="icon-btn" data-icon="panelRight" data-t-title="togglePanel"></button>
+    </header>
+
+    <div id="body">
+      <div id="center">
+        <div id="scroll"><div id="log"></div><div id="trace" hidden></div><button id="to-bottom" class="to-bottom" data-icon="arrowDown" data-t-title="toBottom" hidden></button></div>
+        <div id="dock">
+          <div id="hero">
+            <div class="hero-brand"><span class="mark big">&gt;_</span><span>maxedcode</span></div>
+            <button id="hero-folder" class="hero-folder"><span data-icon="folderOpen"></span><span id="hero-folder-name"></span><span data-icon="chevron"></span></button>
+          </div>
+          <div class="composer">
+            <div id="queue"></div>
+            <div id="attached"></div>
+            <textarea id="input" rows="1" spellcheck="false"></textarea>
+            <div class="bar">
+              <button id="attach" class="round-btn" data-icon="plus" data-t-title="attach"></button>
+              <button id="mode-btn" class="seat"><span id="mode-name"></span><span data-icon="chevron"></span></button>
+              <span class="grow"></span>
+              <button id="model-btn" class="seat"><span>maxedcode</span><span id="effort-name" class="muted"></span><span data-icon="chevron"></span></button>
+              <button id="send" class="send" data-icon="arrowUp" aria-label="send"></button>
+            </div>
+          </div>
+          <div id="status" class="status"></div>
+        </div>
+      </div>
+
+      <aside id="panel" hidden>
+        <div id="panel-resize" class="resize left"></div>
+        <div class="panel-head">
+          <div id="panel-tabs" class="panel-tabs"></div>
+          <span class="grow"></span>
+          <button id="panel-close" class="icon-btn" data-icon="panelRight" data-t-title="togglePanel"></button>
+        </div>
+        <div id="panel-body"></div>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<div id="menu" class="menu" hidden></div>
+<div id="submenu" class="menu" hidden></div>
+<div id="tip" class="tip" hidden></div>
+
+<div id="modal" class="modal" hidden>
+  <div class="dialog">
+    <div class="dialog-side">
+      <h2 data-t="settings"></h2>
+      <nav class="tabs">
+        <button data-tab="general" class="active"><span data-icon="gear"></span><span data-t="general"></span></button>
+        <button data-tab="chat"><span data-icon="sliders"></span><span data-t="secChat"></span></button>
+        <button data-tab="agent"><span data-icon="database"></span><span data-t="secModels"></span></button>
+        <button data-tab="cloud"><span data-icon="globe"></span><span data-t="cloudTab"></span></button>
+        <div class="tabs-sep"></div>
+        <button data-tab="cli"><span data-icon="code"></span><span data-t="secTools"></span></button>
+        <button data-tab="mcp"><span data-icon="link"></span><span data-t="secMcp"></span></button>
+        <button data-tab="hooks"><span data-icon="branch"></span><span data-t="secHooks"></span></button>
+        <button data-tab="perms"><span data-icon="shield"></span><span data-t="secPerms"></span></button>
+        <button data-tab="memory"><span data-icon="brain"></span><span data-t="secMemory"></span></button>
+        <div class="tabs-sep"></div>
+        <button data-tab="browser"><span data-icon="compass"></span><span data-t="brHead"></span></button>
+      </nav>
+    </div>
+    <div class="dialog-main">
+      <button id="close-settings" class="icon-btn close" data-icon="x"></button>
+      <section id="tab-general" class="tab"></section>
+      <section id="tab-chat" class="tab" hidden></section>
+      <section id="tab-agent" class="tab" hidden></section>
+      <section id="tab-cloud" class="tab" hidden></section>
+      <section id="tab-cli" class="tab" hidden></section>
+      <section id="tab-mcp" class="tab" hidden></section>
+      <section id="tab-hooks" class="tab" hidden></section>
+      <section id="tab-perms" class="tab" hidden></section>
+      <section id="tab-memory" class="tab" hidden></section>
+      <section id="tab-browser" class="tab" hidden></section>
+    </div>
+  </div>
+</div>
+
+<script src="vt.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
