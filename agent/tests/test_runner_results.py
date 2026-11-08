@@ -214,7 +214,9 @@ class RunnerResultTests(unittest.IsolatedAsyncioTestCase):
             runners.BG.clear(); runners.BG_STARTED.clear(); runners.KILLED.clear()
             started = runners.bg_start("slow command")
             task_id = started.split()[2].rstrip(":")
-            time.sleep(0.01)
+            # started long ago, not sleep(0.01): a coarse clock (~15 ms ticks on the CI runner) read 0 elapsed
+            for hid in runners.BG_STARTED:
+                runners.BG_STARTED[hid] -= 10
             result = runners.bg_output(task_id)
         self.assertIn("killed", result)
         self.assertTrue(proc.returncode == -9)
