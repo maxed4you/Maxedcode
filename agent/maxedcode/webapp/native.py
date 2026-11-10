@@ -118,7 +118,7 @@ def url_file(port):
     return APP_HOME / f"app-url-{port}.txt"
 
 
-def ensure_server(port, wait=30):
+def ensure_server(port, wait=90):
     """The page URL with its token: the running server's, or a new one started in the background. None + a
     reason printed when it cannot be had."""
     if listening(port):
@@ -138,9 +138,14 @@ def ensure_server(port, wait=30):
         proc = subprocess.Popen(cmd, cwd=str(Path.home()), stdin=subprocess.DEVNULL, stdout=out, stderr=errs,
                                 close_fds=True, start_new_session=True,
                                 env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-    end = time.monotonic() + wait
+    start = time.monotonic()
+    end, told = start + wait, False
     while time.monotonic() < end:
         time.sleep(0.15)
+        if not told and time.monotonic() - start > 3:
+            # the first start of a fresh install can take a while (macOS checks the new files once)
+            say("starting ...")
+            told = True
         try:
             m = re.search(r"maxedcode app: (http\S+)", log.read_text(encoding="utf-8", errors="replace"))
         except OSError:

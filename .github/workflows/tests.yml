@@ -95,8 +95,10 @@ jobs:
           if grep -q '"powershell"' "$RUNNER_TEMP/stub.jsonl"; then exit 1; fi
           kill $stub || true
           # the app window's server: maxed app --no-window prints the page address; the page and its API answer
-          url=$("$dir/program/bin/maxed" app --no-window | grep -o 'http://[^ ]*' | head -1)
-          test -n "$url"
+          app=$("$dir/program/bin/maxed" app --no-window || true)
+          echo "$app"
+          url=$(echo "$app" | grep -o 'http://[^ ]*' | head -1)
+          if [ -z "$url" ]; then cat "$HOME"/.maxedcode-app/server-*.log* || true; exit 1; fi
           curl -fsS -c "$RUNNER_TEMP/jar" -b "$RUNNER_TEMP/jar" -L "$url" | grep -q "<title>maxedcode"
           curl -fsS -b "$RUNNER_TEMP/jar" "${url%%\?*}api/ping" | grep -q running
           "$dir/program/bin/maxed" uninstall --yes
