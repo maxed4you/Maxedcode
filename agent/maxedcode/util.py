@@ -333,6 +333,9 @@ def to_clip(text):
     """Copies text to the clipboard."""
     if not text:
         return False
+    if sys.platform != "win32":       # pbcopy / wl-copy / xclip / xsel; the TUI sends OSC 52 as well
+        from . import plat
+        return plat.copy(text)
     try:
         subprocess.run(["clip"], input=text.encode("utf-16-le"), capture_output=True)
         return True

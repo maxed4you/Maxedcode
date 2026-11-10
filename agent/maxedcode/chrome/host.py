@@ -13,7 +13,6 @@ Two directions:
 Chrome stops the host when the extension disconnects; stdin then ends, a running turn stops and the file is removed.
 """
 import json
-import msvcrt
 import os
 import re
 import secrets
@@ -241,6 +240,7 @@ class Runs:
             if not re.fullmatch(r"app-[\w-]{1,80}", session, re.ASCII):
                 raise OSError(f"bad session id: {session!r}")
             proc = subprocess.Popen(self.command(message), cwd=str(chat_folder(session)), env=env,
+                                    **({} if os.name == "nt" else {"start_new_session": True}),
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                     encoding="utf-8", errors="replace",
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -278,6 +278,13 @@ class Runs:
         if proc and proc.poll() is None:
             self.stopped.add(run)
             # the whole tree: the agent's own shells and scripts too
+            if os.name != "nt":                 # macOS / Linux: the turn's own session (start_new_session)
+                import signal
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()
+                return
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -316,8 +323,10 @@ def serve(bridge, token):
 
 
 def main():
-    for stream in (sys.stdin, sys.stdout):
-        msvcrt.setmode(stream.fileno(), os.O_BINARY)
+    if os.name == "nt":                 # POSIX streams are binary already
+        import msvcrt
+        for stream in (sys.stdin, sys.stdout):
+            msvcrt.setmode(stream.fileno(), os.O_BINARY)
     DIR.mkdir(parents=True, exist_ok=True)
     LIVE.mkdir(parents=True, exist_ok=True)
     bridge = Bridge(sys.stdin.buffer, sys.stdout.buffer)

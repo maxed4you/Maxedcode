@@ -2,6 +2,9 @@
 
     python local_agent.py --app [--port 3077]      prints "maxedcode app: http://127.0.0.1:<port>/?t=<token>"
 
+On macOS / Linux `--app` also shows the page (webapp/native.py: a pywebview window, else the default browser;
+--browser, --no-window) and runs the server itself with `--app --serve` in the background.
+
 The page (static/) talks to this server; the server runs maxedcode exactly as the CLI's headless mode does:
 one turn = `local_agent.py --print --output-format stream-json --session <id>` in the chat's folder, with
 AGENT_MODE (plan/auto) and AGENT_EFFORT. Its JSON lines are relayed to the page as they come. So the window
@@ -28,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import util
+from .. import plat, util
 from .pty import Pty
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -52,6 +55,11 @@ ARCHIVED = Path.home() / ".maxedcode-app" / "archived.json"   # the window's arc
 TOOL_CHARS = 30_000           # a tool result shown in a card (the model saw maxedcode's own clip)
 LAST_SEEN = [time.monotonic()]       # the last request of a page
 QUIT_WHEN_IDLE = threading.Event()   # the launcher's window closed: exit once no turn runs and no page is left
+# macOS / Linux with the page in a browser tab (webapp/native.py): nobody reports the tab closing and a page load
+# must not cancel the wish, so the server exits once idle even with a page that loaded again
+QUIT_STICKY = threading.Event()
+# a turn in a session of its own (macOS / Linux): kill_tree ends its whole process group
+POPEN_GROUP = {} if os.name == "nt" else {"start_new_session": True}
 IDLE_GRACE = 90               # seconds without a page request (an open window pings every 30 s)
 
 
@@ -64,9 +72,14 @@ def agent_env(**extra):
 def kill_tree(proc):
     """The turn runs PowerShell, Python and test children: stop the whole tree."""
     if proc.poll() is None:
+        if os.name != "nt":
+            import signal
+            with suppress(Exception):
+                os.killpg(proc.pid, signal.SIGKILL)     # the turn's own session (POPEN_GROUP)
         with suppress(Exception):
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         with suppress(Exception):
             proc.kill()
 
@@ -578,7 +591,10 @@ public static class MxPick {
 
 
 def pick_folder(start, title=""):
-    """The Explorer "Select Folder" dialog, on top of the app window. -> the folder or None (cancelled)."""
+    """The Explorer "Select Folder" dialog, on top of the app window. -> the folder or None (cancelled).
+    macOS / Linux: the desktop's own dialog (Finder, zenity, kdialog); the native window asks pywebview instead."""
+    if os.name != "nt":
+        return plat.pick_folder(folder(start), title)
     script = ("Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition $env:MX_CS; "
               "$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; "
               "$p = [MxPick]::Folder($env:MX_START, $env:MX_TITLE, $f.Handle); if ($p) { [Console]::Out.Write($p) }")
@@ -595,6 +611,8 @@ def _first(*paths):
 
 def open_apps():
     """Programs the "Open in" menu offers: the ones found on this computer (File Explorer always)."""
+    if os.name != "nt":
+        return _open_apps_posix()
     local, pf, pf86 = Path(os.environ.get("LOCALAPPDATA", "")), Path(os.environ.get("ProgramFiles", "")), \
         Path(os.environ.get("ProgramFiles(x86)", ""))
     found = {
@@ -617,6 +635,8 @@ def open_in(path, app):
     target, exe = folder(path), open_apps().get(app or "explorer")
     if not exe:
         return False
+    if os.name != "nt":
+        return _open_in_posix(target, app or "explorer", exe)
     with suppress(OSError):
         if app == "gitbash":
             subprocess.Popen([exe, f"--cd={target}"])
@@ -628,6 +648,52 @@ def open_in(path, app):
             subprocess.Popen([exe, target])
         return True
     return False
+
+
+# "Open in" on macOS / Linux: key -> how to find it. A .app bundle opens with `open -a`, a command gets the folder.
+POSIX_APPS = {
+    "vscode": ("code", "Visual Studio Code.app"),
+    "insiders": ("code-insiders", "Visual Studio Code - Insiders.app"),
+    "cursor": ("cursor", "Cursor.app"),
+    "windsurf": ("windsurf", "Windsurf.app"),
+    "pycharm": ("pycharm", "PyCharm.app"),
+    "sublime": ("subl", "Sublime Text.app"),
+    "github": ("github", "GitHub Desktop.app"),
+}
+LINUX_TERMINALS = ("x-terminal-emulator", "gnome-terminal", "konsole", "kgx", "xfce4-terminal", "tilix", "alacritty",
+                   "kitty", "wezterm", "foot", "xterm")
+
+
+def _open_apps_posix():
+    found = {"explorer": "open" if sys.platform == "darwin" else (shutil.which("xdg-open") or "")}
+    for key, (cmd, bundle) in POSIX_APPS.items():
+        app = None
+        if sys.platform == "darwin":
+            app = next((str(p) for p in (Path("/Applications", bundle), Path.home() / "Applications" / bundle)
+                        if p.exists()), None)
+        found[key] = app or shutil.which(cmd)
+    if sys.platform == "darwin":
+        found["terminal"] = next((str(p) for p in (Path("/Applications/iTerm.app"),
+                                                   Path("/System/Applications/Utilities/Terminal.app"),
+                                                   Path("/Applications/Utilities/Terminal.app")) if p.exists()), None)
+    else:
+        found["terminal"] = next((shutil.which(t) for t in LINUX_TERMINALS if shutil.which(t)), None)
+    return {k: v for k, v in found.items() if v}
+
+
+def _open_in_posix(target, app, exe):
+    if app == "explorer":
+        return plat.open_path(target)
+    if exe.endswith(".app"):
+        return plat._detached(["open", "-a", exe, target])
+    if app == "terminal":
+        name = Path(exe).name
+        if name in ("gnome-terminal", "xfce4-terminal", "tilix", "kgx"):
+            return plat._detached([exe, f"--working-directory={target}"])
+        if name == "konsole":
+            return plat._detached([exe, "--workdir", target])
+        return plat._detached([exe], cwd=target)     # x-terminal-emulator, xterm, kitty ...: the folder as cwd
+    return plat._detached([exe, target])
 
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", "dist", "build"}
@@ -663,7 +729,9 @@ def raw_image(path, limit=25_000_000):
 
 
 def recycle(path):
-    """Delete to the Recycle Bin (the user can restore it), never for good."""
+    """Delete to the Recycle Bin (the user can restore it), never for good (macOS / Linux: the trash)."""
+    if os.name != "nt":
+        return plat.trash(path)
     import ctypes
     from ctypes import wintypes
 
@@ -709,9 +777,13 @@ def fs_action(data):
         recycle(p)
         return {"deleted": str(p)}
     if act == "start":
+        if os.name != "nt":
+            return {"ok": plat.open_path(p)}
         os.startfile(str(p))            # the file's own app, as a double click in Explorer
         return {"ok": True}
     if act == "reveal":
+        if os.name != "nt":
+            return {"ok": plat.reveal(p)}
         subprocess.Popen(["explorer.exe", "/select,", str(p)])
         return {"ok": True}
     raise ValueError("unknown action")
@@ -754,7 +826,9 @@ def find_files(root, query, limit=40):
 
 
 def pick_file(start):
-    """The Windows file dialog: files to mention with @ in the message."""
+    """The Windows file dialog: files to mention with @ in the message (macOS / Linux: the desktop's own)."""
+    if os.name != "nt":
+        return plat.pick_files(folder(start))
     script = ("Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; "
               "$f.TopMost = $true; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect = $true; "
               f"$d.InitialDirectory = '{folder(start).replace(chr(39), chr(39) * 2)}'; "
@@ -881,6 +955,8 @@ class Handler(BaseHTTPRequestHandler):
             if not secrets.compare_digest((parse_qs(url.query).get("t") or [""])[-1], TOKEN):
                 return self.send(401, {"error": "unauthorized"})
             QUIT_WHEN_IDLE.set()
+            if parse_qs(url.query).get("browser"):
+                QUIT_STICKY.set()
             return self.send(200, {"running": len(RUNS)})
         if not self.authorized():
             return self.send(401, {"error": "unauthorized"})
@@ -1018,7 +1094,7 @@ class Handler(BaseHTTPRequestHandler):
         proc = subprocess.Popen(args, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=agent_env(AGENT_HEADLESS_STREAM="1", AGENT_MODE=mode, AGENT_EFFORT=effort,
                                               AGENT_APPROVAL_DIR=str(APPROVALS)),
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **POPEN_GROUP)
         proc.stdin.write(prompt.encode("utf-8"))      # through stdin: no command-line quoting
         proc.stdin.close()
         return proc
@@ -1159,21 +1235,27 @@ def quit_when_idle(httpd):
     window's host kept running), then exits once no page has come back for IDLE_GRACE seconds."""
     while True:
         time.sleep(2)
-        if QUIT_WHEN_IDLE.is_set() and not RUNS and time.monotonic() - LAST_SEEN[0] > IDLE_GRACE:
+        if (QUIT_WHEN_IDLE.is_set() or QUIT_STICKY.is_set()) and not RUNS and \
+                time.monotonic() - LAST_SEEN[0] > IDLE_GRACE:
             httpd.shutdown()
             return
 
 
 def main(argv):
+    if os.name != "nt" and "--serve" not in argv:
+        # macOS / Linux have no exe to start the server and show the page: --app does both (webapp/native.py)
+        from .native import launch
+        sys.exit(launch(argv))
     port = 3077
     if "--port" in argv:
         port = int(argv[argv.index("--port") + 1])
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     httpd.daemon_threads = True
-    with suppress(Exception):
-        move_old_workspace()
-    with suppress(Exception):
-        move_shared_chats()
+    if os.name == "nt":                  # the old layouts were Windows-only (Documents\maxedcode ...)
+        with suppress(Exception):
+            move_old_workspace()
+        with suppress(Exception):
+            move_shared_chats()
     print(f"maxedcode app: http://127.0.0.1:{port}/?t={TOKEN}", flush=True)
     with suppress(Exception):            # the daily look for a newer release, after the URL (the window waits for it)
         from .. import update

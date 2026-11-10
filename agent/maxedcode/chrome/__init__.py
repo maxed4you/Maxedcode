@@ -2,7 +2,8 @@
 switch that turns both on.
 
     python -m maxedcode.chrome on       register the host for Chrome, Edge, Brave, Chromium, Yandex, Vivaldi (HKCU,
-                                        no admin) and turn the browser tool on (settings.json "browser_tool")
+                                        no admin; macOS / Linux: the manifest in each browser's user folder) and
+                                        turn the browser tool on (settings.json "browser_tool")
     python -m maxedcode.chrome off      remove both
     python -m maxedcode.chrome status   JSON: on, registered, connected browsers, the extension folder
     python -m maxedcode.chrome guide    open the step-by-step guide (guide/index.html) in the default browser
@@ -16,9 +17,11 @@ import os
 import socket
 import subprocess
 import sys
-import winreg
 from contextlib import suppress
 from pathlib import Path
+
+if os.name == "nt":
+    import winreg
 
 NAME = "com.maxedcode.browser"
 EXTENSION_ID = "dakikiblpdhjjkapncflecjjjfecifpo"      # fixed by the "key" in extension/manifest.json
@@ -43,6 +46,51 @@ BROWSERS = {
     "Vivaldi": r"Software\Vivaldi",
 }
 GUIDE = HERE / "guide" / "index.html"      # how to load the extension, with screenshots (English)
+# macOS / Linux: no registry; each browser reads <its user folder>/NativeMessagingHosts/<NAME>.json
+# (folders relative to ~/Library/Application Support on macOS, to ~/.config on Linux; "~/" = the home folder)
+POSIX_BROWSERS = {
+    "darwin": {
+        "Chrome": "Google/Chrome",
+        "Edge": "Microsoft Edge",
+        "Brave": "BraveSoftware/Brave-Browser",
+        "Chromium": "Chromium",
+        "Yandex": "Yandex/YandexBrowser",
+        "Vivaldi": "Vivaldi",
+    },
+    "linux": {
+        "Chrome": "google-chrome",
+        "Edge": "microsoft-edge",
+        "Brave": "BraveSoftware/Brave-Browser",
+        "Chromium": "chromium",
+        "Chromium (snap)": "~/snap/chromium/common/chromium",
+        "Yandex": "yandex-browser",
+        "Vivaldi": "vivaldi",
+    },
+}
+
+
+def posix_browsers():
+    """{browser: its user folder} for this OS (macOS or Linux)."""
+    mac = sys.platform == "darwin"
+    home = Path.home()
+    base = home / "Library" / "Application Support" if mac else home / ".config"
+    return {name: home / rel[2:] if rel.startswith("~/") else base / rel
+            for name, rel in POSIX_BROWSERS["darwin" if mac else "linux"].items()}
+
+
+def posix_targets():
+    """The NativeMessagingHosts folders to write: every installed browser's (its user folder exists); with none
+    found yet, Chrome's and Chromium's (a browser installed later finds the manifest there)."""
+    folders = posix_browsers()
+    have = [d for d in folders.values() if d.is_dir()]
+    if not have:
+        have = [folders["Chrome"], folders["Chromium"]]
+    return [d / "NativeMessagingHosts" for d in have]
+
+
+def launcher_file():
+    """The script the browser starts: host.bat on Windows, an executable shell script elsewhere."""
+    return DIR / ("host.bat" if os.name == "nt" else "host.sh")
 
 
 def python_exe():
@@ -59,6 +107,8 @@ def manifest_file():
 
 def register():
     """Writes the host's launcher and manifest and points every browser's registry key at it."""
+    if os.name != "nt":
+        return _register_posix()
     DIR.mkdir(parents=True, exist_ok=True)
     launcher = DIR / "host.bat"
     # The paths lie under the user profile: a non-ASCII user name needs the UTF-8 code page (cmd reads a .bat in
@@ -74,6 +124,8 @@ def register():
 
 
 def unregister():
+    if os.name != "nt":
+        return _unregister_posix()
     for root in BROWSERS.values():
         with suppress(OSError):
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"{root}\NativeMessagingHosts\{NAME}")
@@ -84,11 +136,57 @@ def unregister():
 
 def registered():
     """The Chrome key points at our manifest, and that manifest launches this copy's host.py."""
+    if os.name != "nt":
+        return _registered_posix()
     with suppress(OSError, ValueError):
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"{BROWSERS['Chrome']}\NativeMessagingHosts\{NAME}") as key:
             if Path(winreg.QueryValue(key, None)) != manifest_file():
                 return False
         return str(HOST) in (DIR / "host.bat").read_text(encoding="utf-8")
+    return False
+
+
+def _manifest(launcher):
+    return {"name": NAME, "description": "maxedcode browser bridge", "path": str(launcher), "type": "stdio",
+            "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"]}
+
+
+def _register_posix():
+    """macOS / Linux: an executable launcher (the right python on host.py) and the manifest in each browser's
+    NativeMessagingHosts folder; a copy stays in DIR for status()."""
+    import shlex
+    DIR.mkdir(parents=True, exist_ok=True)
+    launcher = launcher_file()
+    launcher.write_text(f"#!/bin/sh\nexec {shlex.quote(str(python_exe()))} -I {shlex.quote(str(HOST))} \"$@\"\n",
+                        encoding="utf-8", newline="\n")
+    os.chmod(launcher, 0o755)
+    text = json.dumps(_manifest(launcher), indent=2)
+    manifest_file().write_text(text, encoding="utf-8")
+    for folder in posix_targets():
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{NAME}.json").write_text(text, encoding="utf-8")
+
+
+def _unregister_posix():
+    for d in posix_browsers().values():
+        with suppress(OSError):
+            (d / "NativeMessagingHosts" / f"{NAME}.json").unlink()
+    for name in ("host.sh", f"{NAME}.json"):
+        with suppress(OSError):
+            (DIR / name).unlink()
+
+
+def _registered_posix():
+    """Some browser's manifest launches our launcher, and the launcher runs this copy's host.py."""
+    launcher = launcher_file()
+    with suppress(OSError):
+        if str(HOST) not in launcher.read_text(encoding="utf-8"):
+            return False
+        for d in posix_browsers().values():
+            with suppress(OSError, ValueError):
+                data = json.loads((d / "NativeMessagingHosts" / f"{NAME}.json").read_text(encoding="utf-8"))
+                if Path(data.get("path") or "") == launcher:
+                    return True
     return False
 
 
@@ -147,6 +245,9 @@ def status():
 def open_guide():
     """The step-by-step guide in the default browser. Chrome refuses chrome://extensions from a program (it opened a
     new tab instead), so the guide walks the user there; opened from disk it shows this computer's folder path."""
+    if os.name != "nt":
+        from .. import plat
+        return plat.open_path(GUIDE)
     os.startfile(GUIDE)
     return True
 
@@ -155,6 +256,9 @@ def reveal():
     """Explorer with the extension folder selected: dragged onto chrome://extensions (Developer mode on) it loads
     without typing a path. A path pasted into the folder dialog's search box instead of its address bar only said
     "not found"."""
+    if os.name != "nt":
+        from .. import plat
+        return plat.reveal(EXTENSION)
     subprocess.Popen(["explorer.exe", "/select,", str(EXTENSION)])
     return True
 
