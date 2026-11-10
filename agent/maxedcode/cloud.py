@@ -2,7 +2,8 @@
 
 Only the `task` argument is sent to the chosen OpenAI-compatible endpoint. No local
 conversation, files, tool results, MCP schema, or system prompt is forwarded automatically.
-API credentials are stored with Windows DPAPI (or the OS keyring when available), one per account.
+API credentials are stored with Windows DPAPI, one per account. On macOS / Linux: the OS keyring when the
+`keyring` package works, else a file only the user can read (0600 in a 0700 folder), as other CLIs keep theirs.
 
 Accounts: every key is an account (provider endpoint + key + the models it offers). Several keys of one
 provider are several accounts: a rate-limited or exhausted key hands the request to the next one with the
@@ -237,16 +238,83 @@ def _key_path(account_id=None) -> Path:
     return KEY_PATH if account_id in (None, "", "default") else KEYS_DIR / f"{account_id}.dpapi"
 
 
+KEYRING_SERVICE = "maxedcode-cloud"
+
+
+def _keyring_name(account_id=None) -> str:
+    return "api-key" if account_id in (None, "", "default") else f"api-key-{account_id}"
+
+
+def _posix_key_path(account_id=None) -> Path:
+    """The key file on macOS / Linux (no DPAPI there): next to where Windows keeps its .dpapi file."""
+    return _key_path(account_id).with_suffix(".key")
+
+
+def _private_write(path: Path, data: bytes) -> None:
+    """A file only the user can read: the folder 0700, the file 0600 from the moment it exists (no window in
+    which another user could open it), replaced atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        os.chmod(path.parent, 0o700)
+    temp_name = str(path) + f".{os.getpid()}.tmp"
+    fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+    finally:
+        with suppress(OSError):
+            os.unlink(temp_name)
+
+
+_RING = []      # the keyring module or None, looked up once (finding a backend scans the installed packages)
+
+
+def _keyring():
+    """The OS keyring (macOS Keychain, Secret Service / KWallet) when the package is there and has a real backend."""
+    if not _RING:
+        ring = None
+        with suppress(Exception):
+            import keyring
+            from keyring.backends import fail
+            if not isinstance(keyring.get_keyring(), fail.Keyring):
+                ring = keyring
+        _RING.append(ring)
+    return _RING[0]
+
+
 def _store_key(key: str, account_id=None) -> None:
     raw = key.encode("utf-8")
     if os.name == "nt":
         _atomic_write(_key_path(account_id), _dpapi_protect(raw))
         return
-    try:
-        import keyring  # optional OS credential store for development on non-Windows
-        keyring.set_password("maxedcode-cloud", "api-key" + (f"-{account_id}" if account_id else ""), key)
-    except Exception as exc:
-        raise RuntimeError("Secure key storage is unavailable on this OS; set MAXEDCODE_CLOUD_API_KEY instead.") from exc
+    ring = _keyring()
+    if ring is not None:
+        try:
+            ring.set_password(KEYRING_SERVICE, _keyring_name(account_id), key)
+            with suppress(OSError):          # a key kept in a file before the keyring worked: not two copies
+                _posix_key_path(account_id).unlink()
+            return
+        except Exception:
+            pass                             # a locked or broken keyring: the private file below
+    _private_write(_posix_key_path(account_id), raw)
+
+
+def _forget_key(account_id=None) -> None:
+    """Removes an account's stored key wherever this OS keeps it."""
+    with suppress(OSError):
+        _key_path(account_id).unlink()
+    if os.name == "nt":
+        return
+    with suppress(OSError):
+        _posix_key_path(account_id).unlink()
+    ring = _keyring()
+    if ring is not None:
+        with suppress(Exception):
+            ring.delete_password(KEYRING_SERVICE, _keyring_name(account_id))
 
 
 def get_api_key(account_id=None) -> str:
@@ -258,10 +326,15 @@ def get_api_key(account_id=None) -> str:
             return _dpapi_unprotect(_key_path(account_id).read_bytes()).decode("utf-8")
         except (OSError, ValueError, UnicodeError, RuntimeError):
             return ""
+    ring = _keyring()
+    if ring is not None:
+        with suppress(Exception):
+            key = ring.get_password(KEYRING_SERVICE, _keyring_name(account_id)) or ""
+            if key:
+                return key
     try:
-        import keyring
-        return keyring.get_password("maxedcode-cloud", "api-key" + (f"-{account_id}" if account_id else "")) or ""
-    except Exception:
+        return _posix_key_path(account_id).read_bytes().decode("utf-8").strip()
+    except (OSError, UnicodeError):
         return ""
 
 
@@ -280,7 +353,9 @@ def configure(base_url: str, model: str, api_key: str = "", allow_subagents: boo
     if key:
         _store_key(key)
     if not (key or get_api_key()):
-        raise ValueError("Enter an API key. It is stored encrypted by Windows DPAPI, not in project settings.")
+        raise ValueError("Enter an API key. It is stored encrypted by Windows DPAPI, not in project settings."
+                         if os.name == "nt" else
+                         "Enter an API key. It is stored in the OS keyring or a private file, not in project settings.")
     config = {**current, "base_url": clean_url, "model": clean_model,
               "allow_subagents": bool(allow_subagents), "enabled": True, "max_tokens": clean_tokens}
     _save_config(config)
@@ -355,8 +430,7 @@ def remove_account(ref: str) -> dict:
     hit = next((a for a in acc if ref in (a["id"], a["label"])), None)
     if not hit:
         raise ValueError("No such account; /cloud list shows them.")
-    with suppress(OSError):
-        _key_path(hit["id"]).unlink()
+    _forget_key(hit["id"])
     acc = [a for a in acc if a is not hit]
     cfg["accounts"] = acc
     if acc:

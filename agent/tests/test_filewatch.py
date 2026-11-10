@@ -91,12 +91,14 @@ class FileWatchTests(unittest.TestCase):
         self.assertEqual(watched_files("subagent", {"prompt": "x"}), [])
         self.assertEqual(watched_files("mcp__fs__write", {}), [])
 
+    @unittest.skipUnless(os.name == "nt", "drive-letter paths: Windows only (test_posix_platform covers /paths)")
     def test_named_files_parses_quoted_and_bare_paths(self):
         self.assertEqual(named_files(r"python C:\w\run.py > 'D:\out dir\log.txt'"),
                          [r"C:\w\run.py", r"D:\out dir\log.txt"])
 
 
 class ScratchNoteTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows paths and %TEMP% in the hint")
     def test_new_project_files_get_one_cleanup_hint(self):
         root = r"C:\w\proj"
         changes = [("new", r"C:\w\proj\_t1.bat", "", None), ("new", r"C:\w\proj\.coverage", "", None),
