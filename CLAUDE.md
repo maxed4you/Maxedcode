@@ -21,9 +21,20 @@ irm .../install.ps1 | iex                  # one-line install (repo root): Pytho
 npm i -g maxedcode; maxedcode              # npm (bin/maxedcode.js): the first run of the package opens the setup window
                                            # (bootstrap.ps1 + install.py --dir <offered folder>, as Maxedcode_setup.exe; an install
                                            # made before is offered for update; the folder chosen comes back via MX_DIRFILE);
-                                           # after an npm update — silent --yes into that folder; then maxed.bat with the same
-                                           # arguments; version + folder — ~\.maxedcode\npm-install.json; maxedcode setup
+                                           # after an npm update to a version above the installed one — install.py --update into
+                                           # that folder (never a downgrade of a self-updated install); then maxed.bat with the
+                                           # same arguments; folder — ~\.maxedcode\npm-install.json; maxedcode setup
+maxed --update                             # look for a newer release now and install it (auto-update, see below)
 ```
+**Auto-update** (`maxedcode/update.py`, version in `maxedcode/version.py`): the CLI and the app window look at the
+latest GitHub release once a day in the background; a newer one (its `maxedcode.zip`) is unpacked into
+`~\.maxedcode\update\<version>` and its packages are made sure of (`install.py --prepare`). At the next start
+`local_agent.py`, before importing anything else, installs it with `install.py --update` (program files only:
+config.json, data, shortcuts, PATH stay; pip only if a package is missing, the exe only if its C# changed — the window
+waits 30 s for its server) and runs again on the new code. Not while another maxedcode of the install runs
+(`update/running/<pid>`), never under `--print`, never for a git working copy. Off: `"auto_update": false` in
+settings.json (Settings → General), `MAXEDCODE_NO_UPDATE=1`, `MAXEDCODE_OFFLINE=1`. A release: package.json and
+version.py carry the same number (`release.yml` checks it against the tag; the author's release button bumps both).
 Installation (default `%LOCALAPPDATA%\Programs\maxedcode`): the root contains only `maxedcode app.bat`, `maxedcode CLI.bat`,
 `README.txt` and `program\` (the whole program + `config.json` + `bin\maxed.bat`/`configure.bat`/`shortcuts.bat`, with `bin` on PATH;
 `maxed app`, `maxed configure`, `maxed shortcuts`). Data (sessions, memory, settings.json) still lives in
@@ -148,6 +159,8 @@ agent/
    │                     independent reviewer → up to AGENT_ULTRA_ROUNDS=2 fix rounds; the report goes inside a
    │                     not-yet-sent user message (cache intact). Small tasks and plan mode — a normal turn on high
    ├─ headless.py        --print mode: its own loop (up to max_turns) and its own exec_tool
+   ├─ update.py          auto-update: daily look at the latest GitHub release, download + --prepare, install at the next
+   │                     start (install.py --update), running-instance registry; version.py — VERSION
    ├─ appsettings.py     app window "Settings → maxedcode": server, model (auto), temperature, effort, shared memory;
    │                     the last 3 servers before the current one (~\.maxedcode\recent_servers.json, no keys)
    ├─ appcli.py          app window "Settings → CLI commands": rules, MCP, hooks, memory, skills, commands, subagents, tools

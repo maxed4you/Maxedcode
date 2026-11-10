@@ -53,6 +53,7 @@ SUITES = [
     ("Cloud API data-minimization and approval gates", "test_cloud_privacy.py"),
     ("Empty-session persistence and safe session switching", "test_ui_session_switch.py"),
     ("Installer: arrow-key menus, Strata defaults, setup without a running server", "test_installer.py"),
+    ("Auto-update: daily look at GitHub, download, install at the next start, no downgrade", "test_update.py"),
     ("Model servers: cloud APIs, addresses in any form, per-server keys", "test_cloud_servers.py"),
     ("Every file change shown as a diff; turn time kept for /history", "test_filewatch.py"),
     ("Clickable chat addresses and the confirmation screen", "test_chat_links.py"),

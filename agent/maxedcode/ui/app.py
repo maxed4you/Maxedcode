@@ -583,6 +583,7 @@ class AgentApp(App):
                 S["model"] = config.MODEL     # the server's id: model_settings profiles match it, "local" matched none
         self._hydrate_child_sessions(self.sid)
         await self.banner()
+        self.update_notes()
         await self.refresh_session_tabs(force=True)
         h = await hooks.run("SessionStart", {"session_id": self.sid, "cwd": os.getcwd(), "event": "SessionStart",
                                              "source": "startup"})
@@ -1549,6 +1550,19 @@ class AgentApp(App):
         if follow:
             self.chat.scroll_end(animate=False)
         return w
+
+    def update_notes(self):
+        """Auto-update (maxedcode/update.py): a version installed at this start, then the daily look at GitHub in
+        the background; a newer one downloaded installs at the next start."""
+        from .. import update
+        done = update.take_notice()
+        if done:
+            self.run_worker(self.note(f"maxedcode was updated to {done}", "green"))
+
+        def ready(st):
+            self.call_from_thread(lambda: self.run_worker(self.note(
+                f"maxedcode {st['ready']} is downloaded: it installs at the next start (maxed --update: now)", "cyan")))
+        update.check_async(ready)
 
     async def note(self, text, style="grey62"):
         """Service output to the chat. The first output of a slash command gets a "❯ /command" header,

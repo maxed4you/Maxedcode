@@ -65,6 +65,16 @@ def _effort(value):
     return effort
 
 
+def _bool(value):
+    if isinstance(value, bool):
+        return value
+    if str(value).strip().lower() in ("true", "on", "1", "yes"):
+        return True
+    if str(value).strip().lower() in ("false", "off", "0", "no"):
+        return False
+    raise ValueError("true or false")
+
+
 def _memory(value):
     text = str(value).replace("\r\n", "\n")
     if len(text) > MEMORY_CHARS:
@@ -84,6 +94,7 @@ FIELDS = {
     "min_p": ("sampling", lambda v: _unit(v, "min_p")),
     "effort": ("state", _effort),
     "memory": ("memory", _memory),
+    "auto_update": ("user", _bool),       # maxedcode/update.py reads it from settings.json (off: false)
 }
 
 
@@ -157,6 +168,7 @@ def get():
         "min_p": (state.get("sampling") or {}).get("min_p"),
         "effort": state.get("effort"),
         "memory": memory,
+        "auto_update": user.get("auto_update"),
     }
     models = server_models()
     detected = config.resolve_server()          # what a run does: the window and, unset, the only model
@@ -219,6 +231,8 @@ def apply(changes):
         if where == "server":
             # settings.json wins over config.json (config._get), so a value pinned there is edited there
             target, name = (user, "user") if key in user else (cfg, "cfg")
+        elif where == "user":
+            target, name = user, "user"
         elif where == "sampling":
             target, name = state.setdefault("sampling", {}), "state"
         else:

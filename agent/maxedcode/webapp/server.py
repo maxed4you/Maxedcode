@@ -835,6 +835,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, settings())
         if url.path == "/api/cloud":         # Settings -> Cloud: the same accounts and keys as /cloud in the CLI
             return self.send(200, module("maxedcode.cloud", "get"))
+        if url.path == "/api/update":        # auto-update: this version, a downloaded newer one, a fresh update
+            from .. import update
+            return self.send(200, {**update.status(), "notice": update.take_notice()})
         if url.path == "/api/servers":       # model servers running / installed on this PC (first-start picker)
             return self.send(200, module("maxedcode.servers", "scan"))
         if url.path == "/api/cli":
@@ -910,6 +913,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, settings(data))
         if path == "/api/cloud":            # {"do": add|remove|default|refresh|note|options|test, ...}; a key only on stdin
             return self.send(200, module("maxedcode.cloud", "set", body=data))
+        if path == "/api/update":           # {"check": true}: look at GitHub now and download a newer release
+            from .. import update
+            if data.get("check"):
+                update.check(force=True, manual=True)
+            return self.send(200, update.status())
         if path == "/api/servers":          # start an installed server: {"start": kind} -> {"base": url | null}
             # servers.start waits up to 180 s for a model to load
             return self.send(200, module("maxedcode.servers", "start", str(data.get("start") or ""), timeout=200))
@@ -1167,6 +1175,9 @@ def main(argv):
     with suppress(Exception):
         move_shared_chats()
     print(f"maxedcode app: http://127.0.0.1:{port}/?t={TOKEN}", flush=True)
+    with suppress(Exception):            # the daily look for a newer release, after the URL (the window waits for it)
+        from .. import update
+        update.check_async()
     try:
         threading.Thread(target=quit_when_idle, args=(httpd,), daemon=True).start()
         httpd.serve_forever()

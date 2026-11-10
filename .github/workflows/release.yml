@@ -1,4 +1,5 @@
-# A v* tag (git tag v1.0.0 && git push origin v1.0.0) builds Maxedcode_setup.zip and attaches it to the release,
+# A v* tag (the author's release button, or git tag v1.0.1 && git push origin v1.0.1; package.json and
+# agent/maxedcode/version.py carry the same number) builds Maxedcode_setup.zip and attaches it to the release,
 # then publishes the npm package with the tag's version (trusted publishing: set up once on npmjs.com, package
 # maxedcode -> Settings -> Trusted Publisher -> GitHub Actions, maxed4you/Maxedcode, release.yml).
 name: release
@@ -16,6 +17,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: The tag, package.json and maxedcode/version.py agree
+        # installs update themselves by version.py (maxedcode/update.py): a release with another number in it
+        # would be downloaded again every day
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $py = [regex]::Match((Get-Content agent/maxedcode/version.py -Raw), 'VERSION\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($tag -ne $pkg -or $tag -ne $py) { throw "tag $tag, package.json $pkg, version.py $py must be the same" }
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

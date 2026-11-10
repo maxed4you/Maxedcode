@@ -1451,6 +1451,11 @@ def parse():
     p.add_argument("--uninstall", action="store_true",
                    help="remove the install (this one, or --dir): program, shortcuts, PATH entry, browser bridge")
     p.add_argument("--purge", action="store_true", help="with --uninstall: also remove chats, memory and settings")
+    p.add_argument("--update", action="store_true",
+                   help="update the install (--dir) to this version's files, nothing asked: config.json, chats, "
+                        "settings, shortcuts and PATH stay (auto-update, npm update)")
+    p.add_argument("--prepare", action="store_true",
+                   help="only make sure this version's Python packages import (pip when they do not)")
     a = p.parse_args()
     if a.first_run:
         a.configure = True
@@ -1471,6 +1476,10 @@ def main():
         return
     if ARGS.uninstall:
         sys.exit(run_uninstall())
+    if ARGS.prepare:
+        sys.exit(0 if deps_ok() or install_deps() else 1)
+    if ARGS.update:
+        sys.exit(run_update())
     if store_python() and not ARGS.configure:
         say(STORE_PYTHON, "err")
         sys.exit(1)
@@ -1536,6 +1545,57 @@ def main():
         ask("Press Enter to close")
 
 
+def deps_ok():
+    return subprocess.run([sys.executable, "-c", CHECK_IMPORTS], capture_output=True).returncode == 0
+
+
+def app_sources(dest):
+    """The C# of the app window as text: the exe is built again only when it changed."""
+    app = dest / "desktop" / "app"
+    with suppress(OSError):
+        return "".join((app / f).read_text(encoding="utf-8") for f in ("maxedcode.cs", "program.cs"))
+    return None
+
+
+def mark_dir(dest):
+    """npm (bin/maxedcode.js) learns the folder this setup installed to."""
+    if os.environ.get("MX_DIRFILE"):
+        with suppress(OSError):
+            Path(os.environ["MX_DIRFILE"]).write_text(str(dest.parent), encoding="utf-8")
+
+
+def run_update():
+    """--update: this version's program files into the install, with nothing asked and nothing chosen again;
+    config.json (the server), the data, shortcuts and PATH stay as they are. Quick on purpose: the app window waits
+    30 s for its server, so pip runs only when a package is missing and the exe is built only when its C# changed."""
+    root = Path(ARGS.dir).expanduser().resolve() if ARGS.dir else DEFAULT_DIR
+    dest = root / PROGRAM
+    if not (dest / "install.py").exists() or is_checkout(dest):
+        say(f"no maxedcode install in {root} to update", "err")
+        return 1
+    log(f"update: dest={dest}")
+    before = app_sources(dest)
+    copy_files(dest)
+    mark_dir(dest)
+    stale = []
+    for old in legacy_installs(dest):
+        stale += move_legacy(old, dest)
+    rehost(dest)
+    if not deps_ok():
+        install_deps()
+    write_launchers(dest)
+    app = dest / "desktop" / "app"
+    if before is not None and before == app_sources(dest) and (app / "maxedcode.exe").exists():
+        with suppress(OSError):
+            (app / "python.txt").write_text(sys.executable, encoding="utf-8")
+    else:
+        app_window(dest, False)
+    if stale:
+        add_to_path(dest, stale)
+    say("maxedcode is updated; the server, chats and settings are as they were", "ok")
+    return 1 if UI["errors"] else 0
+
+
 def run_install(dest, cur, base, key, models, kind, model, ctx, want):
     """The install itself, the same for the console wizard and the setup window: files, packages, config.json,
     launchers, shortcuts, the app window, PATH, the test request. Everything it says goes through say()."""
@@ -1543,9 +1603,7 @@ def run_install(dest, cur, base, key, models, kind, model, ctx, want):
     stale = []
     if not ARGS.configure:
         copy_files(dest)
-        if os.environ.get("MX_DIRFILE"):          # npm (bin/maxedcode.js): the folder this setup installed to
-            with suppress(OSError):
-                Path(os.environ["MX_DIRFILE"]).write_text(str(dest.parent), encoding="utf-8")
+        mark_dir(dest)
         for old in legacy_installs(dest):
             stale += move_legacy(old, dest)
         rehost(dest)

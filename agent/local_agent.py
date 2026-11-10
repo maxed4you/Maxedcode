@@ -53,6 +53,26 @@ def auto_server():
     os.environ["AGENT_BASE_URL"] = base
 
 
+def self_update():
+    """Auto-update (maxedcode/update.py), before anything else of maxedcode is loaded: a newer version downloaded
+    earlier is installed, then this run starts again on the new code. --print (the window's turns, scripts) only
+    counts as running: nothing is installed under a turn. maxed --update: look and install now."""
+    from maxedcode import update
+    if "--update" in sys.argv[1:2]:
+        sys.exit(update.main(sys.argv))
+    if not ({"--print", "-p"} & set(sys.argv)) and not os.environ.get("MAXEDCODE_UPDATED") and update.apply():
+        env = {**os.environ, "MAXEDCODE_UPDATED": "1"}
+        sys.exit(subprocess.run([sys.executable, str(HERE / "local_agent.py"), *sys.argv[1:]], env=env).returncode)
+    update.register()
+
+
+try:
+    self_update()
+except SystemExit:
+    raise
+except Exception as e:          # an update must never keep maxedcode from starting
+    print(f"  maxedcode: update skipped ({type(e).__name__}: {e})", file=sys.stderr)
+
 if needs_setup():
     if "--app" not in sys.argv and "--print" not in sys.argv and "-p" not in sys.argv and sys.stdin.isatty():
         rc = subprocess.run([sys.executable, str(HERE / "install.py"), "--first-run"]).returncode

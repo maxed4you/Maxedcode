@@ -2,8 +2,10 @@
 // npm entry point (npm i -g maxedcode / npx maxedcode).
 // The first run of this package opens the setup window (agent/install.py + install_gui.py, as Maxedcode_setup.exe):
 // the install folder, the model server, the options; a maxedcode installed before (the zip, install.ps1) is offered
-// as the folder to update. After an npm update the next run updates that install quietly (the server, chats and
-// settings are kept). Then it runs maxed with the same arguments: maxedcode, maxedcode app, maxedcode --print "..." ...
+// as the folder to update. After an npm update to a version newer than the installed one, the next run updates that
+// install quietly (install.py --update: the server, chats, settings, shortcuts and PATH stay); an install that
+// updated itself from GitHub (maxedcode/update.py) to something newer is never taken back. Then it runs maxed with
+// the same arguments: maxedcode, maxedcode app, maxedcode --print "..." ...
 // Right after the setup window nothing more starts by itself: the window has its own "Open maxedcode" button.
 // Files npm downloads carry no "from the internet" mark, so nothing here needs a paid code signature.
 'use strict'
@@ -41,12 +43,30 @@ function findPython () {
 
 const bat = d => path.join(d, 'program', 'bin', 'maxed.bat')
 
+// "1.2.10" -> [1, 2, 10]; newer(a, b): a is above b
+const parse = v => (/^v?(\d+(\.\d+)*)$/.exec(String(v || '').trim()) || [null, ''])[1].split('.').filter(Boolean).map(Number)
+function newer (a, b) {
+  const x = parse(a); const y = parse(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0)
+  return false
+}
+
+// the version of the program installed in dir (maxedcode/version.py); '0' for one older than that file
+function installedVersion (dir) {
+  try {
+    const m = /VERSION\s*=\s*"([^"]+)"/.exec(fs.readFileSync(path.join(dir, 'program', 'maxedcode', 'version.py'), 'utf8'))
+    if (m) return m[1]
+  } catch (e) {}
+  return '0'
+}
+
 // -> the folder installed to, or '' when the setup window was closed before installing
 function install (dir, wizard) {
   // --dir: the folder the wizard offers first (it asks anyway); for an update, the one to update
   const args = [path.join(ROOT, 'agent', 'install.py'), '--dir', dir]
-  // the wizard is the setup window (install.py falls back to the console wizard, and with no console to the defaults)
-  if (!wizard) args.push('--yes')
+  // the wizard is the setup window (install.py falls back to the console wizard, and with no console to the defaults);
+  // an update replaces the program files and asks nothing
+  if (!wizard) args.push('--update')
   // extra setup options, as for install.ps1: MAXEDCODE_ARGS="--base-url 192.168.0.10:1234 --model qwen3"
   if (process.env.MAXEDCODE_ARGS) args.push.apply(args, process.env.MAXEDCODE_ARGS.split(/\s+/).filter(Boolean))
   console.log(wizard ? '\n  maxedcode: first start, opening the setup window ...' : '\n  maxedcode: updating to ' + pkg.version + ' ...')
@@ -109,7 +129,7 @@ function main () {
     } else if (!fs.existsSync(bat(dir))) {
       fail('nothing was installed (the setup window was closed); run maxedcode again to install it')
     }
-  } else if (stamp.version !== pkg.version) {
+  } else if (newer(pkg.version, installedVersion(dir))) {
     dir = install(dir, false) || dir
   }
   const maxed = bat(dir)

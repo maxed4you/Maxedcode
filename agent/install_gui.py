@@ -742,9 +742,12 @@ class Setup:
             self.say_status(errors[-1][:140], "err")
         else:
             self.h_title.configure(text="Saved" if self.configure else "maxedcode is installed")
-            self.h_sub.configure(text=f"In {root}: \"maxedcode app\" (window) and \"maxedcode CLI\" on the desktop "
-                                      "and in Start, maxed in a new terminal. Change the model server later: Settings - "
-                                      "maxedcode in the app, or maxed configure." if not self.configure else
+            want = getattr(self, "want", {}) or {}
+            how = ("\"maxedcode app\" (window) and \"maxedcode CLI\" on the desktop and in Start" if want.get("link")
+                   else "start it with maxedcode app.bat (window) or maxedcode CLI.bat in that folder")
+            how += ", maxed in a new terminal" if want.get("path") else ""
+            self.h_sub.configure(text=f"In {root}: {how}. Change the model server later: Settings - maxedcode in "
+                                      "the app, or maxed configure." if not self.configure else
                                  "maxedcode uses the new server from its next start.")
             self.say_status("done", "ok")
         for i, lb in enumerate(self.step_labels):

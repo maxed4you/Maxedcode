@@ -132,6 +132,13 @@
     setupRecent: ['Недавние', 'Recent'], setupFound: ['На этом компьютере', 'On this PC'],
     recentServers: ['Недавние серверы', 'Recent servers'], recentSub: ['Последние, с которыми работали; ключ облака нужно ввести снова', 'The last ones used; a cloud API needs its key again'],
     recentUse: ['Вернуть', 'Switch back'],
+    updVersion: ['Версия', 'Version'], updCheck: ['Проверить сейчас', 'Check now'], updChecking: ['Проверяю…', 'Checking…'],
+    updUpToDate: ['последняя', 'up to date'], updReady: ['скачана, установится при следующем запуске', 'downloaded, installs at the next start'],
+    updNoInstall: ['эта копия не установка (git), не обновляется', 'this copy is not an install (git): not updated'],
+    updAuto: ['Обновлять автоматически', 'Update automatically'],
+    updAutoSub: ['Раз в день смотрит новый релиз на GitHub, скачивает его в фоне и ставит при следующем запуске. Сервер, чаты и настройки остаются.', 'Once a day looks for a new release on GitHub, downloads it in the background and installs it at the next start. The server, chats and settings stay.'],
+    updatedTo: ['maxedcode обновлён до ', 'maxedcode was updated to '],
+    updDownloaded: [' скачана: установится, когда откроете maxedcode снова', ' is downloaded: it installs when you open maxedcode again'],
     newChat: ['Новая сессия', 'New session'], newChatKey: ['Новая сессия (Ctrl + Alt + N)', 'New session (Ctrl + Alt + N)'],
     workspaces: ['Проекты', 'Projects'], defaultWs: ['Общая папка', 'Shared folder'], addFolder: ['Добавить проект', 'Add a project'],
     sharedFolder: ['Папка чатов без проекта', 'Folder of chats without a project'],
@@ -382,6 +389,7 @@
   // The browser extension speaks the window's language: the server keeps it in a file the browser bridge reads
   function shareLang() { api('/api/lang', { lang: lang }).catch(function () {}) }
   shareLang()
+  loadUpdate(true)
   function base(p) {
     if (state.workspace && same(p, state.workspace)) return t('noProject')
     if (ownFolder(p)) return t('chatOwnFolder')
@@ -415,12 +423,22 @@
     $('to-bottom').hidden = state.view !== 'chat' || s.scrollHeight - s.scrollTop - s.clientHeight < 160
   }
   var toastEl = null, toastTimer = null
-  function toast(text) {
+  function toast(text, ms) {
     if (!toastEl) { toastEl = el('div', 'toast'); document.body.appendChild(toastEl) }
     toastEl.textContent = text
     toastEl.hidden = false
     clearTimeout(toastTimer)
-    toastTimer = setTimeout(function () { toastEl.hidden = true }, 1800)
+    toastTimer = setTimeout(function () { toastEl.hidden = true }, ms || 1800)
+  }
+  // ── auto-update (maxedcode/update.py): what this start installed, or a newer version waiting for the next one ──
+  var updateInfo = null
+  function loadUpdate(show) {
+    return api('/api/update').then(function (u) {
+      updateInfo = u
+      if (show && u.notice) toast(t('updatedTo') + u.notice, 6000)
+      else if (show && u.ready) toast('maxedcode ' + u.ready + t('updDownloaded'), 6000)
+      if (!$('modal').hidden) renderGeneral()
+    }, function () {})
   }
   function button(label, onclick) {
     var b = el('button', 'btn small outline', label)     // secondary: the accent fill is for the one main action
@@ -3389,6 +3407,25 @@
     size.appendChild(num)
     size.appendChild(el('span', 'muted', ' ' + t('px')))
     tab.appendChild(row(t('fontSize'), t('fontSizeSub'), size))
+    var u = updateInfo
+    if (!u) return
+    var vrow = el('div', 'pick-row')
+    var check = button(t('updCheck'), function () {
+      check.disabled = true
+      check.textContent = t('updChecking')
+      api('/api/update', { check: true }).then(function (x) { updateInfo = Object.assign({}, updateInfo, x); renderGeneral() },
+        function () { renderGeneral() })
+    })
+    if (!u.installed) check.disabled = true
+    vrow.appendChild(check)
+    var sub = !u.installed ? t('updNoInstall') : u.ready ? u.ready + ' ' + t('updReady')
+      : u.error ? u.error : u.latest ? t('updUpToDate') : ''
+    tab.appendChild(row(t('updVersion') + ' ' + u.version, sub, vrow))
+    if (u.installed) {
+      tab.appendChild(row(t('updAuto'), t('updAutoSub'), toggle(u.auto, function (on) {
+        api('/api/settings', { auto_update: on ? null : false }).then(function () { loadUpdate(false) })
+      })))
+    }
   }
   // ── Chat: how a turn is shown and what Enter does while the agent works ──
   function renderChat() {
