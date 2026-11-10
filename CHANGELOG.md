@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.1
+
+### LM Studio / Ollama: the model you loaded, never a second one
+- maxedcode now uses the model that is **loaded** in LM Studio / Ollama, with its real context. Before, it always
+  asked for the model from the settings, and if another one was loaded, LM Studio quietly loaded a second model
+  (often with a 4096-token context). Now it says once which model it uses and why, and checks again before each turn,
+  so switching the model in LM Studio is followed. Nothing loaded: it keeps your choice and tells you to load it.
+- A model loaded with a context too small to work in (under 16384 tokens: maxedcode's instructions and tools alone
+  take about 9-10k) is now said plainly, instead of a bare "Error code: 400".
+
+### Linux (tried on a fresh Ubuntu 24.04 desktop)
+- The one-line install for Linux is `wget -qO- .../install.sh | sh`: Ubuntu and Debian have `wget`, not `curl`.
+- The setup window uses the desktop's own fonts: no more cut-off text and boxes instead of check marks.
+- The app's own window: on Wayland it opens without extra packages; on an X11 desktop without `libxcb-cursor0`
+  the app opens in the browser and says the one command that gives it its own window
+  (`sudo apt install libxcb-cursor0`), also as a desktop notification when started from the app menu.
+- Strata is no longer marked "recommended" on Linux / macOS when it is not installed.
+
 ## 1.1.0
 
 **maxedcode now runs on Linux and macOS too.** One package for all three systems: `npm install -g maxedcode`
