@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 from contextlib import suppress
+from . import shelltool
 from .config import SETTINGS
 
 EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "Stop", "SubagentStop", "PreCompact")
@@ -25,6 +26,8 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse")   # only these events have a tool na
 def _match(m, tool):
     if not m or m == "*":
         return True
+    if tool == shelltool.NAME and shelltool.POSIX and _match(m, "powershell"):
+        return True     # a matcher written for Windows ("powershell") also matches bash on macOS / Linux
     try:
         return bool(re.search(m, tool or "", re.I))
     except re.error:

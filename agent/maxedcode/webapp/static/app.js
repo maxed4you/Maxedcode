@@ -359,6 +359,7 @@
     read_file: ['Прочитан файл', 'Read a file', 'file'], edit_file: ['Изменён файл', 'Edited a file', 'pencil'],
     patch: ['Изменён файл', 'Edited a file', 'pencil'], apply_diff: ['Изменён файл', 'Edited a file', 'pencil'],
     write_file: ['Записан файл', 'Wrote a file', 'pencil'], powershell: ['Команда', 'Command', 'terminal'],
+    bash: ['Команда', 'Command', 'terminal'],
     py_run: ['Запуск Python', 'Ran Python', 'terminal'], code_mode: ['Скрипт', 'Script', 'terminal'],
     web_search: ['Поиск в интернете', 'Web search', 'globe'], fetch_url: ['Открыта страница', 'Fetched a page', 'globe'],
     browser: ['Браузер', 'Browser', 'globe'],
@@ -834,7 +835,7 @@
       var rules = el('button', 'pick small', t('nrRules'))
       rules.onclick = function () { openSettings(); document.querySelector('.tabs button[data-tab="cli"]').click() }
       box.appendChild(rules)
-    } else if (call.name === 'powershell' && call.args && call.args.command) {
+    } else if ((call.name === 'powershell' || call.name === 'bash') && call.args && call.args.command) {
       msg = t('nrDanger')
       var term = el('button', 'pick small', t('nrTerminal'))
       term.onclick = function () { openTerminal(call.args.command) }
@@ -1090,7 +1091,7 @@
     var a = ev.input || {}, box = el('div', 'ask-card approval')
     this.approvals = this.approvals || {}
     this.approvals[ev.id] = box
-    var act = EDIT_TOOLS[ev.tool] ? 'apEdit' : ev.tool === 'powershell' ? 'apCommand' : ev.tool === 'py_run' ? 'apPython'
+    var act = EDIT_TOOLS[ev.tool] ? 'apEdit' : (ev.tool === 'powershell' || ev.tool === 'bash') ? 'apCommand' : ev.tool === 'py_run' ? 'apPython'
       : ev.tool === 'browser' ? 'apBrowser' : ev.tool === 'cloud_code' ? 'apCloud' : /^mcp__/.test(ev.tool) ? 'apMcp' : 'apTool'
     box.appendChild(el('div', 'label', t('apHead') + ' ' + t(act) + (act === 'apTool' ? ' ' + ev.tool : '')))
     var lines = EDIT_TOOLS[ev.tool] ? editLines(ev.tool, a) : null

@@ -381,5 +381,25 @@ class RealBashTests(unittest.TestCase):
             self.assertEqual(hooks.sync("PreToolUse", {"tool_name": "bash"})["decision"], "deny")
 
 
+class WindowsNamesOnPosixTests(unittest.TestCase):
+    """Rules, hook matchers and agent tool lists written on Windows ("powershell") mean bash on macOS / Linux."""
+
+    def test_canon_is_identity_on_windows(self):
+        with patch.object(shelltool, "POSIX", False), patch.object(shelltool, "NAME", "powershell"):
+            self.assertEqual(shelltool.canon("powershell"), "powershell")
+            self.assertEqual(shelltool.canon("bash"), "bash")
+
+    def test_windows_names_map_to_bash_on_posix(self):
+        from maxedcode import hooks
+        with patch.object(shelltool, "POSIX", True), patch.object(shelltool, "NAME", "bash"):
+            for n in ("powershell", "PowerShell", "pwsh", "sh", "zsh"):
+                self.assertEqual(shelltool.canon(n), "bash")
+            self.assertEqual(shelltool.canon("py_run"), "py_run")
+            self.assertTrue(permissions.match("powershell(git .*)", "bash", "git status"))
+            self.assertFalse(permissions.match("powershell(git .*)", "py_run", "git status"))
+            self.assertTrue(hooks._match("powershell", "bash"))
+            self.assertFalse(hooks._match("powershell", "py_run"))
+
+
 if __name__ == "__main__":
     unittest.main()

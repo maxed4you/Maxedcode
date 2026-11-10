@@ -334,7 +334,7 @@ def save(rules):
 
 def match(rule, name, key):
     tool, _, pat = rule.partition("(")
-    if tool.strip() not in (name, "*"):
+    if shelltool.canon(tool.strip()) not in (name, "*"):
         return False
     # only the rule's own closing bracket: rstrip(")") also ate the one of an escaped "\)" at the end of a
     # command, left a lone backslash, and every later check of that tool raised re.error

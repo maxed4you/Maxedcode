@@ -17,6 +17,16 @@ TITLE = "Bash" if POSIX else "PowerShell"
 NAMES = frozenset({"powershell", "bash"})
 
 
+# Names written for the other platform's shell (rules, hook matchers, agent tool lists copied from Windows):
+# on POSIX they mean bash. On Windows canon() returns the name unchanged.
+_OTHER = frozenset({"powershell", "pwsh", "sh", "zsh"})
+
+
+def canon(name):
+    """A tool name from settings or an agent definition, as this platform's tool list spells it."""
+    return NAME if POSIX and isinstance(name, str) and name.strip().lower() in _OTHER else name
+
+
 def is_shell(name):
     """True when name is this platform's command tool."""
     return name == NAME

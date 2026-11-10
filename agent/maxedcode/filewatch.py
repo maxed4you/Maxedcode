@@ -38,8 +38,10 @@ def named_files(text):
 
 def watched_files(name, args):
     """None when the tool cannot change files or draws its own diff; else the absolute files it names."""
-    from .tools import ps_readonly
-    if name == "powershell" and not args.get("run_in_background") and not ps_readonly(args.get("command") or ""):
+    from . import shelltool
+    from .tools import ps_readonly, sh_readonly
+    readonly = sh_readonly if shelltool.POSIX else ps_readonly
+    if shelltool.is_shell(name) and not args.get("run_in_background") and not readonly(args.get("command") or ""):
         return named_files(args.get("command"))
     if name == "py_run":
         return named_files(args.get("code"))
