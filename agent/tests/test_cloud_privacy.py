@@ -250,7 +250,9 @@ class CloudWindowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             base = __import__("pathlib").Path(temp)
             keys = {}
-            with patch.object(cloud, "CONFIG_PATH", base / "cloud_config.json"), \
+            # A run from tests AI sets MAXEDCODE_CLOUD=off, which empties the catalog checked here.
+            with patch.dict(os.environ, {"MAXEDCODE_CLOUD": ""}), \
+                    patch.object(cloud, "CONFIG_PATH", base / "cloud_config.json"), \
                     patch.object(cloud, "_store_key", side_effect=lambda k, aid=None: keys.__setitem__(aid or "default", k)), \
                     patch.object(cloud, "get_api_key", side_effect=lambda aid=None: keys.get(aid or "default", "")), \
                     patch.object(cloud, "fetch_models", return_value=["m-fast", "m-big", "text-embedding-1"]):

@@ -38,7 +38,8 @@ class ToolInputRepairTests(unittest.TestCase):
         _, canonical, _ = normalize_tool_arguments("read_file", '{"path": ' + json.dumps(path) + ', "start_line": "3"}',
                                                    self.schemas)
         self.assertEqual(json.loads(canonical)["start_line"], 3)
-        self.assertNotIn(" ", canonical.replace(path, ""))
+        # Compact separators; the path itself may contain spaces (e.g. a run from "tests AI").
+        self.assertNotIn(" ", canonical.replace(json.dumps(path), ""))
 
     def test_aliases_unknown_fields_and_integer_strings(self):
         parsed, canonical, error = self.normalize("read_file", {"file_path": "src/main.py", "start_line": "12", "unused": 5})
