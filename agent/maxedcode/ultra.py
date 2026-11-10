@@ -9,6 +9,7 @@ the cache rule holds); the main agent then verifies it and finishes the turn at 
 import os
 from contextlib import suppress
 from . import config, subagent
+from .shelltool import NAME as SHELL_TOOL
 from .util import repair_json
 
 
@@ -100,7 +101,7 @@ async def _check(command, tools):
     """Run the plan's check through the subagent gate (hooks, deny/ask rules, dangerous commands)."""
     if not command:
         return ""
-    out = await subagent.exec("powershell", {"command": command}, allow_write=True, tool_specs=tools)
+    out = await subagent.exec(SHELL_TOOL, {"command": command}, allow_write=True, tool_specs=tools)
     out = str(out or "").strip()
     return out if len(out) <= CHECK_TAIL else "…" + out[-CHECK_TAIL:]
 

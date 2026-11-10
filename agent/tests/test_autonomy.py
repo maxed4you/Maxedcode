@@ -11,6 +11,7 @@ os.environ.setdefault("AGENT_HOME", _HOME.name)
 
 from maxedcode import compact, config, subagent  # noqa: E402
 from maxedcode.util import LATE_OPEN  # noqa: E402
+from maxedcode.shelltool import NAME as SHELL  # noqa: E402  (powershell on Windows, bash on Linux/macOS)
 
 GOOD = "# Objective\nx\n# Next Move\ny\n# Relevant Files\na.py"
 
@@ -306,7 +307,7 @@ class ChildLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_huge_tool_output_is_capped_like_the_main_loop(self):
         big = "x" * 300_000
         with patch.object(subagent, "exec", return_value=big):
-            out = await subagent._exec_call({"name": "powershell"}, {"command": "dir"}, True, self.tools)
+            out = await subagent._exec_call({"name": SHELL}, {"command": "dir"}, True, self.tools)
         self.assertLess(len(out), 30_000)
         self.assertIn("output truncated", out)
 
@@ -377,7 +378,7 @@ class BrokenCallTests(unittest.TestCase):
                   '[{"old_text": "a", "new_text": "b"}]\n</parameter>\n</function>\n</tool_call>')
         ambiguous = ("<tool_call>\n<x>\n<parameter=pattern>\n*.py\n</parameter>\n<parameter=path>\n.\n"
                      "</parameter>\n</function>\n</tool_call>")   # grep and glob both fit
-        self.assertEqual(text_tool_calls(shell, "t", subagent.BUILTIN)[0][0]["function"]["name"], "powershell")
+        self.assertEqual(text_tool_calls(shell, "t", subagent.BUILTIN)[0][0]["function"]["name"], SHELL)
         found = text_tool_calls(patch_, "t", subagent.BUILTIN)[0][0]["function"]
         self.assertEqual((found["name"], '"blocks": [{' in found["arguments"]), ("patch", True))
         self.assertEqual(text_tool_calls(ambiguous, "t", subagent.BUILTIN)[0], [])

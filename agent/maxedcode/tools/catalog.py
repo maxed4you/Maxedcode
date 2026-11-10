@@ -13,6 +13,7 @@ from .schemas import BUILTIN
 
 _SHORT = {
     "powershell": "Run a PowerShell command; use run_in_background for long jobs.",
+    "bash": "Run a bash command; use run_in_background for long jobs.",
     "read_file": "Read a file or folder tree; use start_line/end_line or offset/limit to page. An image (png/jpg) is shown to you as a picture.",
     "edit_file": "Replace one exact existing text fragment.",
     "patch": "Apply multiple exact replacements to one file atomically.",

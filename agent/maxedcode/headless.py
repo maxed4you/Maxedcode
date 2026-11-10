@@ -29,6 +29,7 @@ from .tools.fs import attach_files, tool_apply_diff, tool_edit, tool_glob, tool_
 from .tools.catalog import session_catalog
 from .tools.code_mode import run_code
 from . import cachekey
+from .shelltool import NAME as SHELL_TOOL
 from .cachekey import extra_body as cache_extra_body
 from .request_compat import unsupported_optional_fields
 from .streaming import STREAM_USAGE, stream_completion
@@ -343,7 +344,7 @@ def approval_reason(name, a, permission):
         return None
     if name == "browser" and a.get("action") in browser.READ_ACTIONS and not a.get("task"):
         return None
-    if name == "powershell" and ps_readonly(a.get("command") or ""):
+    if name == SHELL_TOOL and ps_readonly(a.get("command") or ""):
         return None
     if APPROVE_MODE == "accept-edits" and name in EDITS:
         return None
@@ -428,8 +429,8 @@ async def exec_tool(name, a, sid=""):
             return "Error: plan mode is read-only; describe the intended change without modifying files."
         # The same rule as the TUI's plan_refuse: ps_readonly() is the parallel-safety check and refused
         # every pipeline, so "Get-ChildItem | Select-Object" was blocked and the plan had no facts.
-        if name == "powershell" and (WRITE_PS.search(a.get("command") or "")
-                                     or permissions.dangerous("powershell", a.get("command") or "")):
+        if name == SHELL_TOOL and (WRITE_PS.search(a.get("command") or "")
+                                   or permissions.dangerous(SHELL_TOOL, a.get("command") or "")):
             return "Error: plan mode is read-only; this command changes the disk. Put it in the plan, do not run it."
         if name == "py_run" and (WRITE_PY.search(a.get("code") or "") or permissions.dangerous_python(a.get("code") or "")):
             return "Error: plan mode is read-only; mutating Python is blocked."
@@ -483,7 +484,7 @@ async def exec_tool(name, a, sid=""):
                 TODOS[:] = [{"content": str(t.get("content") or "").strip(), "status": t.get("status")}
                             for t in normalize_todos(a.get("todos") or []) if isinstance(t, dict)]
             return o
-        if name == "powershell":
+        if name == SHELL_TOOL:
             if a.get("run_in_background"):
                 result = runners.bg_start(a["command"])
                 import re
@@ -579,7 +580,7 @@ async def guarded_exec(name, a, sid=""):
     pre = GUARD.before(name, a)
     if pre:
         return pre
-    named = watched_files(name, a) if name in ("powershell", "py_run") else None
+    named = watched_files(name, a) if name in (SHELL_TOOL, "py_run") else None
     snap = None
     if named is not None:
         with suppress(Exception):
@@ -1243,7 +1244,7 @@ async def _run_impl(prompt, as_json=False, sid=None):
                 answer = ""
                 continue
             if (not todo_nudged and turn_index < f["max_turns"] - 1 and any(t.get("status") != "done" for t in TODOS)
-                    and any(n in T["tools"] for n in ("edit_file", "write_file", "patch", "apply_diff", "powershell", "py_run"))):
+                    and any(n in T["tools"] for n in ("edit_file", "write_file", "patch", "apply_diff", SHELL_TOOL, "py_run"))):
                 # Same checkpoint as the TUI: a final answer with open checklist items after real work is
                 # often an early stop on a long task. Once per run; the answer stays in the history.
                 todo_nudged = True
@@ -1313,7 +1314,7 @@ async def _run_impl(prompt, as_json=False, sid=None):
                 outs.append(await timed_exec(
                     n, a, sid, validation_errors.get(c["id"]), call_id=c["id"],
                     result_prefix=normalization_notices.get(c["id"], "")))
-        if any(n in {"edit_file", "write_file", "patch", "apply_diff", "py_run", "powershell"} for n in names):
+        if any(n in {"edit_file", "write_file", "patch", "apply_diff", "py_run", SHELL_TOOL} for n in names):
             repo_map_dirty = True
         for c, a, (o, ms) in zip(calls, args_list, outs):
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": tool_content(c["function"]["name"], a, o)})

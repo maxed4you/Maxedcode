@@ -165,8 +165,9 @@ def sync(event, payload):
             if hk.get("type") != "command" or not hk.get("command"):
                 continue
             try:
+                # A command line string: Windows parses it itself; Linux/macOS need /bin/sh -c (as run() does).
                 p = subprocess.run(hk["command"], input=json.dumps(payload, ensure_ascii=False),
-                                   capture_output=True, text=True, timeout=TIMEOUT,
+                                   capture_output=True, text=True, timeout=TIMEOUT, shell=os.name != "nt",
                                    env={**os.environ, "MAXEDCODE_EVENT": event}, creationflags=NO_WINDOW)
             except Exception as e:
                 r["message"] += f"hook failed: {type(e).__name__}: {e}\n"

@@ -1,5 +1,6 @@
 """Regressions for local-model editing, repo maps, and model profiles."""
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,6 +91,7 @@ class LocalQualityTests(unittest.TestCase):
         self.assertIn("binary file", text)
         self.assertNotIn("garbage", text)
 
+    @unittest.skipUnless(os.name == "nt", "Windows default protected paths (AppData)")
     def test_protected_path_denial_says_protected_not_deny_rule(self):
         from maxedcode import permissions
         msg = permissions.deny_message("read_file", r"C:\Users\me\AppData\Roaming\app\config.json")

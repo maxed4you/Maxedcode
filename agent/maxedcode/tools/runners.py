@@ -19,8 +19,12 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from ..config import HOME
+from ..shelltool import NAME as SHELL_TOOL, POSIX, posix_env
 from ..util import clip, strip_ansi, tool_output_dir
 from . import psprep, shell
+
+# Linux/macOS: every child leads its own process group, so a timeout or bg_kill stops its children too.
+_SESSION = {"start_new_session": True} if POSIX else {}
 
 # Output is limited per tool, not globally: for commands the head and tail matter, the middle
 # is almost never needed (head+tail buffer). That's wrong for read_file, so it has its own limit.
@@ -43,6 +47,8 @@ def _kill(p):
                 return
         except Exception:
             pass
+    elif shell.killpg(p.pid):
+        return
     with suppress(Exception):
         p.kill()
 
@@ -204,10 +210,10 @@ def _py_timeout(body):
     if body.strip():
         return (f"{head}\n{_head_tail(body, PY_OUT_MAX)}\n[hint] It was still running (partial output above). "
                 "Do not rerun it as is: shrink the input or the number of cases, or start a long check with "
-                "powershell run_in_background and wait with bg_output(id, wait=N).")
+                f"{SHELL_TOOL} run_in_background and wait with bg_output(id, wait=N).")
     return (f"{head}\n[hint] Nothing was printed in {PY_TIMEOUT} s: the code is stuck (waiting for input, an endless "
             "loop) or the work is too big (brute force on a large input). Do not rerun it as is: shrink the input, "
-            "print progress, or start a long check with powershell run_in_background and wait with bg_output(id, wait=N).")
+            f"print progress, or start a long check with {SHELL_TOOL} run_in_background and wait with bg_output(id, wait=N).")
 
 
 async def _run_py(code, promote=False):
@@ -222,7 +228,7 @@ async def _run_py(code, promote=False):
             p = await asyncio.create_subprocess_exec(
                 sys.executable, str(path), stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                creationflags=shell.NO_WINDOW,
+                creationflags=shell.NO_WINDOW, **_SESSION,
             )
         except OSError as e:
             # A process that never started is not a command that returned a nonzero code.
@@ -317,6 +323,9 @@ LONG_CMD = re.compile(
     r"|Invoke-WebRequest|\biwr\b|Start-BitsTransfer|curl(?:\.exe)?\s|wget\s|Expand-Archive|docker\s+(?:pull|build)"
     r"|cargo\s+(?:build|install)|dotnet\s+(?:build|restore|publish)|ollama\s+pull|(?:huggingface-cli|hf)\s+download"
     r"|conda\s+(?:install|create))")
+if POSIX:   # the package managers of Linux/macOS
+    LONG_CMD = re.compile(LONG_CMD.pattern[:-1] + r"|(?:apt(?:-get)?|dnf|yum|zypper|apk|brew|port|snap)\s+(?:install|upgrade|add)"
+                          r"|pacman\s+-S)")
 PS_TIMEOUT = 120
 PS_TIMEOUT_LONG = 600
 PS_TIMEOUT_MAX = 600
@@ -373,7 +382,8 @@ def _shell_location():
     if not (shell.ENABLED and shell.SHELL.alive):
         return None
     with suppress(Exception):
-        r = shell.SHELL.run("Write-Output ('__loc=' + (Get-Location).ProviderPath)", 5)
+        r = shell.SHELL.run("printf '__loc=%s\\n' \"$PWD\"" if POSIX else
+                            "Write-Output ('__loc=' + (Get-Location).ProviderPath)", 5)
         if r and r[0] == 0:
             return next((x[6:] for x in r[1].splitlines() if x.startswith("__loc=")), None)
     return None
@@ -386,7 +396,9 @@ async def _run_long(cmd):
     killed: the result hands over the task id. Killing it left a half-written folder, and the retry
     collided with it (the openclaw clone took 4 steps and still failed)."""
     loc = await asyncio.to_thread(_shell_location)
-    if loc:
+    if loc and POSIX:
+        cmd = "cd -- '" + loc.replace("'", "'\\''") + "' || exit 1\n" + cmd
+    elif loc:
         cmd = "Set-Location -LiteralPath '" + loc.replace("'", "''") + "'\n" + cmd
     started = bg_start(cmd)
     m = re.search(r"Background id (\d+): started", started)
@@ -412,6 +424,8 @@ async def _run_long(cmd):
 async def _run_ps(cmd, timeout=None, promote=False):
     if timeout is None and LONG_CMD.search(cmd or "") and not EXIT_STMT.search(cmd or ""):
         return await _run_long(cmd)
+    if POSIX:
+        return await _run_sh(cmd, timeout, promote)
     limit = ps_timeout(cmd, timeout)
     # Capture native exit codes and PowerShell failures, but never exit the shared shell process.
     # `exit` is only valid for the fresh one-shot process below: using it in the persistent shell
@@ -476,6 +490,96 @@ async def _run_ps(cmd, timeout=None, promote=False):
             os.unlink(script)
     body = _rstrip_lines(out.decode("utf-8", "replace") + err.decode("utf-8", "replace"))
     return note + _ps_result(p.returncode, body)
+
+
+async def _run_sh(cmd, timeout=None, promote=False):
+    """Linux/macOS: _run_ps for the bash tool. The same live-shell / one-shot split and the same timeout,
+    background and result rules; no PowerShell wrapper, a `bash -n` syntax pre-check instead of psprep."""
+    cmd = shell.posix_text(cmd)
+    limit = ps_timeout(cmd, timeout)
+    pre = await asyncio.to_thread(shell.syntax_error, cmd)
+    if pre:
+        return pre
+    if shell.ENABLED and not shell.protected(cmd) and not shell.one_shot(cmd) and not EXIT_STMT.search(cmd):
+        hid = _new_bg_id() if promote else None
+        log = None
+        if hid:
+            (HOME / "bg").mkdir(parents=True, exist_ok=True)
+            log = HOME / "bg" / f"{hid}.log"
+        try:
+            r = await asyncio.to_thread(shell.SHELL.run, cmd, limit, str(log) if log else None)
+        except asyncio.CancelledError:
+            shell.SHELL.stop()
+            raise
+        if r is not None and r[0] == shell.Shell.RUN_DETACHED:
+            return _detached_ps(hid, r[1], log, limit, _rstrip_lines(r[2]))
+        if r is not None:
+            code, out, err = r
+            body = _rstrip_lines("\n".join(x for x in (out, err) if x))
+            if code == shell.SHELL.RUN_TIMEOUT:
+                if body == f"{shell.LABEL} timed out":
+                    body = ""
+                return (f"Error: {shell.LABEL} timed out after {limit} s; the command and its child processes were "
+                        f"stopped and not automatically retried.\n{_head_tail(body, PS_OUT_MAX)}{_sh_timeout_hint(body)}")
+            if code == shell.SHELL.RUN_LOST:
+                return (f"Error: {shell.LABEL} ended before completion; command may have run and was not automatically "
+                        f"retried.\n{_head_tail(body, PS_OUT_MAX)}{_sh_timeout_hint(body)}")
+            return _sh_result(code, body)
+    # One-shot run: protected paths, exit/exec/set -e, or no live bash.
+    try:
+        p = await asyncio.create_subprocess_exec(
+            shell.BASH, "-c", cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, env=posix_env(), **_SESSION)
+    except OSError as e:
+        return f"Error: could not start {shell.BASH}: {type(e).__name__}: {e}"
+    try:
+        out, _ = await asyncio.wait_for(p.communicate(), limit)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        _kill(p)
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        return f"Error: {limit} s timeout, the command was interrupted." + _sh_timeout_hint("")
+    return _sh_result(p.returncode, _rstrip_lines(out.decode("utf-8", "replace")))
+
+
+def _sh_result(code, body):
+    if code != 0:
+        return (f"Error: bash command exited with code {code}.\n{_head_tail(body, PS_OUT_MAX)}" if body
+                else f"Error: bash command exited with code {code} (no output).")
+    return body or f"(no output, exit code {code})"
+
+
+def _sh_timeout_hint(body):
+    if body.strip():
+        return ("\n[hint] It was still working (partial output above); a partial result may be on disk. Remove"
+                " it, then rerun with run_in_background and wait with bg_output(id, wait=N).")
+    return ("\n[hint] Nothing was printed before the timeout: the command stalled in its first step (waiting for input"
+            " or a prompt, a lock, the network). Do not rerun it as is. Split it so partial output arrives, pass a"
+            " larger timeout (max 600), or start it with run_in_background and wait with bg_output(id, wait=N).")
+
+
+def _bg_start_sh(cmd):
+    """bg_start for bash: syntax pre-check, then `bash -c` in its own process group, output to the task log."""
+    cmd = shell.posix_text(cmd)
+    pre = shell.syntax_error(cmd)
+    if pre:
+        return pre
+    d = HOME / "bg"
+    d.mkdir(parents=True, exist_ok=True)
+    hid = _new_bg_id()
+    log = d / f"{hid}.log"
+    handle = open(log, "w", encoding="utf-8")
+    try:
+        try:
+            p = subprocess.Popen([shell.BASH, "-c", cmd], stdin=subprocess.DEVNULL, stdout=handle,
+                                 stderr=subprocess.STDOUT, env=posix_env(), **_SESSION)
+        except OSError as e:
+            return f"Error: could not start background command: {type(e).__name__}: {e}"
+    finally:
+        handle.close()
+    BG[hid] = (p, log)
+    BG_STARTED[hid] = time.monotonic()
+    return f'Background id {hid}: started. Check output with bg_output("{hid}"), stop with bg_kill("{hid}").'
 
 
 PS_BG_MAX = int(os.environ.get("AGENT_PS_BG_MAX", "600"))
@@ -546,6 +650,8 @@ def strip_native_records(body):
 
 
 def _ps_result(code, body):
+    if POSIX:
+        return _sh_result(code, body)
     body = strip_native_records(body)
     pre = psprep.explain(body)
     if pre:
@@ -572,6 +678,8 @@ except (TypeError, ValueError):
 
 def bg_start(cmd):
     """Start a background command and return its task id."""
+    if POSIX:
+        return _bg_start_sh(cmd)
     # The same auto-fix and pre-check as a regular command: otherwise the error shows only in the task log.
     cmd, _ = psprep.autofix(cmd)
     if shell.ENABLED:

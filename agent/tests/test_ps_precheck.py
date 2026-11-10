@@ -8,6 +8,10 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+import os
+if os.name != "nt":   # Windows PowerShell suite; the bash tool is covered by test_posix_shell.py
+    raise unittest.SkipTest("Windows PowerShell suite")
+
 from maxedcode.tools import psprep, runners, shell
 
 

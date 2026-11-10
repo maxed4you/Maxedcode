@@ -7,6 +7,10 @@ from pathlib import Path
 from queue import Queue
 from unittest.mock import AsyncMock, patch
 
+import os
+if os.name != "nt":   # Windows PowerShell suite; the bash tool is covered by test_posix_shell.py
+    raise unittest.SkipTest("Windows PowerShell suite")
+
 from maxedcode.tools import runners, shell
 
 

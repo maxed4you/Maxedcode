@@ -5,15 +5,31 @@ the executable tool handlers are implemented in sibling modules.
 """
 from ..util import T, s
 from ..config import FINISH_TOOL_ENABLED
+from ..shelltool import POSIX
 from .todo import STATUS
 
+
+def _shell_params():
+    return {"command": s("Command"),
+            "timeout": {"type": "integer", "description": "seconds, default 120 (600 for git clone/pip/npm install/downloads), max 600; a command still running then continues as a background task"},
+            "run_in_background": {"type": "boolean", "description": "start without waiting, return the task id right away (long-running process)"}}
+
+
+POWERSHELL_SPEC = T(
+    "powershell", "Run a Windows PowerShell 5.1 command or multi-line script (not bash). It must finish in seconds: "
+    "do not use -Recurse over the whole profile or disk, search in specific folders. Non-interactive only "
+    "(no Read-Host/pause/editors). Unknown cmdlets/parameters and syntax errors are rejected before anything runs",
+    _shell_params(), ["command"])
+# Linux/macOS: the same tool and arguments under the shell's own name (see shelltool.py).
+BASH_SPEC = T(
+    "bash", "Run a bash command or multi-line script on this Linux/macOS machine (not PowerShell). It must finish in "
+    "seconds: do not search the whole home folder or disk (find / or grep -r ~), search in specific folders. "
+    "Non-interactive only (no read prompts, sudo passwords, editors or pagers; stdin is empty unless you pipe into "
+    "a command). Syntax errors are rejected before anything runs",
+    _shell_params(), ["command"])
+
 BUILTIN = [
-    T("powershell", "Run a Windows PowerShell 5.1 command or multi-line script (not bash). It must finish in seconds: "
-      "do not use -Recurse over the whole profile or disk, search in specific folders. Non-interactive only "
-      "(no Read-Host/pause/editors). Unknown cmdlets/parameters and syntax errors are rejected before anything runs",
-      {"command": s("Command"),
-       "timeout": {"type": "integer", "description": "seconds, default 120 (600 for git clone/pip/npm install/downloads), max 600; a command still running then continues as a background task"},
-       "run_in_background": {"type": "boolean", "description": "start without waiting, return the task id right away (long-running process)"}}, ["command"]),
+    BASH_SPEC if POSIX else POWERSHELL_SPEC,
     T("read_file", "Read a text file by line range (default first 2000 lines; use offset/limit or start_line/end_line for paging). Large outputs are saved to temporary storage and only a preview is returned. Large .log/.csv/.tsv/.json/.jsonl/.ndjson files over 24 KB are not read into context unless a line range is explicit; use py_run for counts/summaries. For a large source file, locate the needed place with grep. "
       "A folder path returns its file tree plus small source files in one call. An image file (png/jpg/webp) is shown to you as a picture. Project instruction files "
       "(CLAUDE.md/AGENTS.md) and folder docs are already in the context — do not re-read them",
@@ -38,7 +54,7 @@ BUILTIN = [
     T("glob", "List file paths matching a glob pattern under a directory. Returns at most 100 paths; use read_file or grep to inspect content.",
       {"pattern": s("Glob pattern, e.g. **/*.py or src/*.ts"), "path": s("Root directory, default current working directory")}, ["pattern"]),
     T("write_file", "Create a new text file, or fully rewrite a small one, with its complete content in this one call (no placeholders). Change an existing file with patch/edit_file instead.",{"path": s("Absolute path"), "content": s("Content")}),
-    T("py_run", "Run Python code and return stdout+stderr. After 60 s a still running snippet continues as a background task (bg_output / bg_kill) if it printed something; a silent one is stopped. For tests and quick checks instead of write_file + powershell",
+    T("py_run", "Run Python code and return stdout+stderr. After 60 s a still running snippet continues as a background task (bg_output / bg_kill) if it printed something; a silent one is stopped. For tests and quick checks instead of write_file + " + ("bash" if POSIX else "powershell"),
       {"code": s("Python code")}),
     T("tool_search", "Load the full schema for one deferred MCP tool by its exact name. Use this when the desired MCP tool name appears in the available names listed here; after the schema is returned, call that MCP tool in the next model turn.",
       {"name": s("Exact full MCP tool name, e.g. mcp__server__tool")}, ["name"]),
@@ -84,7 +100,7 @@ BUILTIN = [
     T("code_mode", "Run a short Python orchestration script in a restricted namespace. Call tools.<name>(...) and await results; run independent calls via asyncio.gather. Imports, def, while, comprehensions, direct filesystem access, subprocesses, and timers are unavailable: it is not a Python runner, run code and tests with py_run. Returns one compact aggregate result.",
       {"code": s("Python orchestration snippet; tool calls are async and should be awaited")}, ["code"]),
     T("bg_output", "Output of a background task started with run_in_background. To wait for it, pass wait (seconds): "
-      "it returns the moment the task ends. Never wait with Start-Sleep",
+      "it returns the moment the task ends. Never wait with " + ("sleep" if POSIX else "Start-Sleep"),
       {"id": s("Task id"), "wait": {"type": "integer", "description": "seconds to wait for the task to finish, max 600"}}, ["id"]),
     T("bg_kill", "Stop a background task by id", {"id": s("Task id")}, ["id"]),
     T("todo_write", "Create or update a concise checklist for the CURRENT user request when work is substantial (3+ distinct kinds of work). Write every step in the USER'S LANGUAGE (the language of their request), with as many steps as the work needs. Do not use for explanations, conversational Q&A, or read-only tasks. Mark done only after completion; update only when the stage changes.",
@@ -104,7 +120,7 @@ BUILTIN = [
 if FINISH_TOOL_ENABLED:
     BUILTIN.append(T("finish", "Close this turn immediately and provide its final response in text. Call this alone, after all work and verification are complete; it prevents an extra model generation.",
                      {"text": s("Final answer to show the user")}, ["text"]))
-READONLY = ("read_file", "grep", "glob", "web_search", "fetch_url", "ask_user", "powershell", "py_source", "py_run", "todo_write",
+READONLY = ("read_file", "grep", "glob", "web_search", "fetch_url", "ask_user", BUILTIN[0]["function"]["name"], "py_source", "py_run", "todo_write",
             "skill", "exit_plan_mode", "finish")   # plan-mode allowlist; powershell/py_run are checked below
 # Only calls that are intrinsically read-only may run together. Shell/Python snippets can mutate
 # state, and ask_user/todo_write are interaction/state operations, so they must not be batched.

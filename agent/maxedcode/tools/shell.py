@@ -1,4 +1,4 @@
-"""Persistent PowerShell for a session, with a serialized marker-based protocol.
+"""Persistent PowerShell (bash on Linux/macOS) for a session, with a serialized marker-based protocol.
 
 A shared shell avoids process startup overhead and preserves cwd/variables between calls. Tool
 commands report their exit status through a marker instead of exiting the shell. Calls are serialized
@@ -8,10 +8,15 @@ on EOF or kill it at the deadline; do not automatically retry a command that may
 import contextlib
 import os
 import re
+import shutil
+import signal
 import subprocess
+import tempfile
 import threading
 import time
 from queue import Empty, Queue
+
+from ..shelltool import POSIX, bash_path, posix_env
 
 ENABLED = str(os.environ.get("AGENT_PERSISTENT_SHELL", "1")).lower() in ("1", "true", "yes")
 IDLE_EXIT = int(os.environ.get("AGENT_SHELL_IDLE", "300"))       # seconds before the shell is retired
@@ -19,6 +24,10 @@ MARK_PREFIX = "__maxedcode_exit_"
 # The child process gets its own hidden console: otherwise PowerShell changes the TUI console buffer
 # (BufferSize, Write-Progress, Clear-Host) and Textual draws askew — the screen shifts up.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Linux/macOS: /bin/bash (3.2 on macOS: the protocol below uses nothing newer). Without bash there is no
+# persistent shell; every command then runs as a one-shot `sh -c`.
+BASH = bash_path() if POSIX else None
+LABEL = "persistent shell" if POSIX else "persistent PowerShell"
 
 # A live shell can leave cwd, so protected paths get their own one-shot execution path instead.
 PROTECTED_MARK = ("protected", "forbidden", "refused", "denied")
@@ -42,7 +51,76 @@ NESTED_PS = re.compile(r"(?:^|[\s;&|(])(?:powershell|pwsh|cmd)(?:\.exe)?(?=\s|$)
 
 
 def nested_shell(cmd):
+    if POSIX:
+        return False         # every bash command already reads /dev/null (see posix_payload)
     return bool(NESTED_PS.search(str(cmd or "")))
+
+
+# bash: a command that ends or reconfigures the shell itself runs as a one-shot `bash -c` instead: `exit`/`exec`
+# would end the live shell before its marker, and `set -e`/`set -u` would kill it at the next failing command.
+POSIX_ONE_SHOT = re.compile(r"(?m)(?:^|[;&|({]|\b(?:then|do|else))\s*(?:exit|exec|logout)\b|\bset\s+(?:[-+][A-Za-z]|-o\b)")
+
+
+def one_shot(cmd):
+    return POSIX and bool(POSIX_ONE_SHOT.search(str(cmd or "")))
+
+
+def posix_text(cmd):
+    """A model command as bash reads it: CRLF from a Windows-trained model becomes LF (`$'\\r': command not found`)."""
+    return str(cmd or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def posix_payload(script, mark):
+    """What the live bash reads for one command, whose text is in the file `script`. Sourcing a file (not
+    piping the text in) means the command's own syntax can never swallow the marker line, and its error
+    lines count from 1 ("cmd: line 3: x: command not found"; under eval they counted every line the shell
+    ever read). stdin is /dev/null: a program waiting for input gets EOF instead of reading the protocol and
+    hanging until the timeout; a heredoc or a pipe inside the command still feeds its own command. stderr
+    joins stdout in order. Only bash 3.2 features."""
+    quoted = "'" + str(script).replace("'", "'\\''") + "'"
+    return f"{{ . {quoted}\n}} </dev/null 2>&1\nprintf '%s%s\\n' '{mark}' \"$?\"\n"
+
+
+def syntax_error(cmd):
+    """bash -n pre-check: the "command NOT run" result for a parse error, or None (also when bash cannot run).
+    eval executes line by line, so without it a script with a typo on line 5 ran lines 1-4 first."""
+    source = posix_text(cmd)
+    if not POSIX or not source.strip() or "extglob" in source:
+        return None
+    try:
+        r = subprocess.run([BASH, "-n", "-c", source], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=5, env=posix_env())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode == 0:
+        return None
+    lines = [re.sub(r"^\S*(?:bash|sh): (?:-c: )?", "", x).strip() for x in (r.stderr or "").splitlines() if x.strip()]
+    if not lines:
+        return None
+    return ("Error: command NOT run — pre-check failed, nothing was executed. Fix the command and run it once:\n" +
+            "\n".join(f"- {x}" for x in lines[:6]))
+
+
+def find_mark(line, mark):
+    """Position of the completion marker in a line, or -1. PowerShell prints it on a line of its own; a bash
+    command whose output does not end with a newline leaves it at the end of its last line."""
+    if POSIX:
+        return line.find(mark)
+    return 0 if line.startswith(mark) else -1
+
+
+def killpg(pid):
+    """POSIX: kill the whole process group of a child started with start_new_session (it leads the group), so a
+    timed-out command leaves no orphan children. False on Windows or when pid does not lead its own group."""
+    if not POSIX:
+        return False
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+        os.killpg(pid, signal.SIGKILL)
+        return True
+    except (OSError, AttributeError):
+        return False
 
 
 # Any native program started without piped input (python, node, a test binary) inherits the same pipe:
@@ -98,9 +176,12 @@ class Detached:
                     continue
                 if line is None:
                     break
-                if line.startswith(self.mark):
+                at = find_mark(line, self.mark)
+                if at >= 0:
+                    if line[:at]:
+                        self.log.write(line[:at] + "\n")
                     try:
-                        code = int(line[len(self.mark):])
+                        code = int(line[at + len(self.mark):])
                     except ValueError:
                         code = 0
                     break
@@ -127,6 +208,8 @@ class Detached:
             with contextlib.suppress(Exception):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.pid)], capture_output=True,
                                creationflags=NO_WINDOW, timeout=10)
+        elif killpg(self.pid):
+            return
         with contextlib.suppress(Exception):
             self.proc.kill()
 
@@ -137,6 +220,7 @@ class Shell:
         self.out = Queue()
         self.err = Queue()
         self.alive = False
+        self.script = None           # POSIX: the file each command is written to and sourced from
         self.last = time.monotonic()
         # All calls share one stdin/stdout pair; concurrent readers corrupt the protocol.
         self.lock = threading.Lock()
@@ -145,6 +229,8 @@ class Shell:
         if self.alive:
             return True
         self.out, self.err = Queue(), Queue()
+        if POSIX:
+            return self._start_posix()
         try:
             self.proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
@@ -163,6 +249,25 @@ class Shell:
             pass
         return True
 
+    def _start_posix(self):
+        """Live bash in its own session: no controlling terminal (a password prompt fails at once instead of
+        hanging) and one process group, which stop() kills with every child."""
+        if not BASH or os.path.basename(BASH).split(".")[0] != "bash":
+            return False             # plain sh: one-shot runs only
+        try:
+            self.script = os.path.join(tempfile.mkdtemp(prefix="maxedcode-sh-"), "cmd")
+            # argv[0] "bash": its own messages read "bash: ..." rather than "/bin/bash: ...".
+            self.proc = subprocess.Popen(
+                ["bash", "--noprofile", "--norc"], executable=BASH, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                start_new_session=True, env=posix_env())
+        except Exception:
+            return False
+        self.alive = True
+        for stream, q, is_stdout in ((self.proc.stdout, self.out, True), (self.proc.stderr, self.err, False)):
+            threading.Thread(target=self._pump, args=(stream, q, is_stdout, self.proc), daemon=True).start()
+        return True
+
     def _pump(self, stream, q, is_stdout=False, proc=None):
         try:
             for line in stream:
@@ -179,6 +284,9 @@ class Shell:
         (git clone, pip) running, holding files open, and the next command collided with it."""
         self.alive = False
         proc, self.proc = self.proc, None
+        script, self.script = self.script, None
+        if script:
+            shutil.rmtree(os.path.dirname(script), ignore_errors=True)
         if proc is None or proc.poll() is not None:
             return
         if os.name == "nt":
@@ -188,6 +296,10 @@ class Shell:
                     return
             except Exception:
                 pass
+        elif killpg(proc.pid):
+            with contextlib.suppress(Exception):
+                proc.wait(2)         # reap it
+            return
         try:
             proc.kill()
         except Exception:
@@ -211,14 +323,20 @@ class Shell:
         nonce = str(int(time.monotonic() * 1000) % 1_000_000)
         mark = MARK_PREFIX + nonce + "__"
         try:
-            proc.stdin.write(command + "\n")
-            # The command wrapper sets __maxedcode_run_exit; this separate line reports it.
-            # A unique marker prevents ordinary command output being mistaken for completion.
-            proc.stdin.write(f'Write-Output ("{mark}" + [string]$global:__maxedcode_run_exit)\n')
+            if POSIX:
+                # bash reads a sourced file whole before running it, so the next command may overwrite it.
+                with open(self.script, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(posix_text(command) + "\n")
+                proc.stdin.write(posix_payload(self.script, mark))
+            else:
+                proc.stdin.write(command + "\n")
+                # The command wrapper sets __maxedcode_run_exit; this separate line reports it.
+                # A unique marker prevents ordinary command output being mistaken for completion.
+                proc.stdin.write(f'Write-Output ("{mark}" + [string]$global:__maxedcode_run_exit)\n')
             proc.stdin.flush()
         except Exception:
             self.stop()
-            return self.RUN_LOST, "", "Could not submit command to the persistent PowerShell; it was not retried."
+            return self.RUN_LOST, "", f"Could not submit command to the {LABEL}; it was not retried."
         self.last = time.monotonic()
         out, code = [], None
         end = time.monotonic() + timeout
@@ -232,14 +350,20 @@ class Shell:
                 continue
             if line is None:
                 break
-            if line.startswith(mark):
+            at = find_mark(line, mark)
+            if at >= 0:
+                if line[:at]:
+                    out.append(line[:at])
                 try:
-                    code = int(line[len(mark):])
+                    code = int(line[at + len(mark):])
                 except ValueError:
                     code = 0
                 break
             out.append(line)
 
+        if POSIX and self.script:
+            # "/tmp/maxedcode-sh-x/cmd: line 2: foo: command not found" -> "bash: line 2: ...", as under bash -c
+            out = [x.replace(self.script + ": ", "bash: ") for x in out]
         err = []
         while True:
             try:
@@ -261,7 +385,7 @@ class Shell:
                     self.proc, self.alive = None, False      # the next command starts a fresh shell
                     return self.RUN_DETACHED, task, "\n".join(out + err)
             self.stop()
-            detail = "persistent PowerShell timed out" if timed_out else "persistent PowerShell ended before its completion marker"
+            detail = f"{LABEL} timed out" if timed_out else f"{LABEL} ended before its completion marker"
             body = "\n".join(out)
             if err:
                 body = (body + "\n" + "\n".join(err)).strip()

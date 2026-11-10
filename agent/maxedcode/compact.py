@@ -23,6 +23,7 @@ import re
 from contextlib import suppress
 
 from . import config
+from .shelltool import NAME as SHELL_TOOL
 from .util import sent_reasoning, split_think, tok
 
 ANCHOR_RE = re.compile(r'<compact id="([^"]+)"')
@@ -483,7 +484,7 @@ def basic_summary(msgs, keep_replies=3, reply_cap=1500):
             continue
         for call in m.get("tool_calls") or []:
             name = (call.get("function") or {}).get("name")
-            cmd = _call_args(call).get("command") if name == "powershell" else None
+            cmd = _call_args(call).get("command") if name == SHELL_TOOL else None
             if isinstance(cmd, str) and cmd.strip():
                 commands.append(" ".join(cmd.split())[:200])
         text = re.sub(r"(?s)<think>.*?</think>", "", str(m.get("content") or "")).strip()
