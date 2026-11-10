@@ -329,13 +329,16 @@ class PtyTests(unittest.TestCase):
             try:
                 term.resize(100, 30)
                 term.write("stty size; echo mx-$((40+2)); pwd\n")
-                text, offset, end = "", 0, time.monotonic() + 10
-                while "mx-42" not in text and time.monotonic() < end:
+                # wait for the last command's output too (pwd), not just the first line: on a busy CI Mac it
+                # came in a later read than "mx-42"
+                where = os.path.basename(os.path.realpath(d))
+                text, offset, end = "", 0, time.monotonic() + 20
+                while not ("mx-42" in text and where in text.split("mx-42", 1)[1]) and time.monotonic() < end:
                     offset, more, _ = term.since(offset, timeout=1)
                     text += more
                 self.assertIn("mx-42", text)
                 self.assertIn("30 100", text)
-                self.assertIn(os.path.basename(os.path.realpath(d)), text)
+                self.assertIn(where, text)
                 self.assertTrue(term.alive())
             finally:
                 term.close()
