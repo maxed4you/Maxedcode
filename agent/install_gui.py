@@ -20,6 +20,8 @@ except ImportError:      # Python without Tcl/Tk: the console wizard
 
 BG, SIDE, SIDE_FG, SIDE_ON, MUTED = "#ffffff", "#1e2330", "#8a93a6", "#ffffff", "#6b7280"
 OK, WARN, ERR, ACCENT = "#15803d", "#b45309", "#b91c1c", "#2563eb"
+# Marks of done steps and results; a Tk without Xft (the Python uv installs on Linux) draws them as boxes
+MARK, CROSS = "✓", "✗"
 
 
 def available():
@@ -120,14 +122,28 @@ class Setup:
         s = ttk.Style(self.root)
         with suppress(tk.TclError):
             s.theme_use("vista")
+        global MARK, CROSS
+        with suppress(tk.TclError):
+            if self.root.tk.call("::tk::pkgconfig", "get", "fontsystem") == "x11":
+                MARK, CROSS = "+", "x"
         base = font.nametofont("TkDefaultFont")
-        base.configure(family="Segoe UI", size=10)
-        font.nametofont("TkTextFont").configure(family="Segoe UI", size=10)
-        self.f_title = font.Font(family="Segoe UI Semibold", size=16)
-        self.f_bold = font.Font(family="Segoe UI Semibold", size=10)
-        self.f_small = font.Font(family="Segoe UI", size=9)
-        self.f_brand = font.Font(family="Segoe UI Semibold", size=14)
-        self.f_mono = font.Font(family="Consolas", size=9)
+        if os.name == "nt":
+            sans, semi, mono, bold = "Segoe UI", "Segoe UI Semibold", "Consolas", "normal"
+        else:
+            # Segoe UI / Consolas exist only on Windows: Tk fell back to a wide fixed font, the text was cut off
+            # on the right and the check marks were boxes (a fresh Ubuntu 24.04)
+            sans = next((f for f in ("Ubuntu", "Cantarell", "DejaVu Sans", "Helvetica Neue", "Helvetica")
+                         if f in set(font.families(self.root))), "Helvetica")
+            semi, bold = sans, "bold"
+            mono = next((f for f in ("Ubuntu Mono", "DejaVu Sans Mono", "Menlo", "Courier")
+                         if f in set(font.families(self.root))), "Courier")
+        base.configure(family=sans, size=10)
+        font.nametofont("TkTextFont").configure(family=sans, size=10)
+        self.f_title = font.Font(family=semi, size=16, weight=bold)
+        self.f_bold = font.Font(family=semi, size=10, weight=bold)
+        self.f_small = font.Font(family=sans, size=9)
+        self.f_brand = font.Font(family=semi, size=14, weight=bold)
+        self.f_mono = font.Font(family=mono, size=9)
         for name in ("TFrame", "TLabel", "TCheckbutton", "TRadiobutton", "TLabelframe", "TLabelframe.Label"):
             s.configure(name, background=BG)
         s.configure("Muted.TLabel", foreground=MUTED, font=self.f_small)
@@ -185,7 +201,7 @@ class Setup:
         for w in self.body.winfo_children():
             w.destroy()
         for i, lb in enumerate(self.step_labels):
-            lb.configure(fg=SIDE_ON if i == n else SIDE_FG, text=("✓  " if i < n else "") + self.steps[i])
+            lb.configure(fg=SIDE_ON if i == n else SIDE_FG, text=(MARK + "  " if i < n else "") + self.steps[i])
         self.h_title.configure(text=title)
         self.h_sub.configure(text=sub)
         self.can = {self.b_back: bool(back), self.b_next: bool(nxt)}
@@ -282,7 +298,7 @@ class Setup:
         for name, hint in self.m.COMPONENTS:
             row = ttk.Frame(b)
             row.pack(fill="x", pady=(self.px(6), 0))
-            ttk.Label(row, text="✓", style="Ok.TLabel", width=2).pack(side="left")
+            ttk.Label(row, text=MARK, style="Ok.TLabel", width=2).pack(side="left")
             ttk.Label(row, text=name, style="Bold.TLabel").pack(side="left")
             ttk.Label(row, text="  " + hint, style="Muted.TLabel").pack(side="left")
         ttk.Label(b, text="Install folder", style="Bold.TLabel").pack(anchor="w", pady=(self.px(26), self.px(6)))
@@ -430,7 +446,8 @@ class Setup:
         if not any(x["kind"] == "strata" for x in self.found):
             opts.append(("strata", None, "Strata on this computer",
                          ("installed, not running" if m.strata_installed() else "not installed, get it later") +
-                         "  (recommended)"))
+                         # Linux / macOS: Strata is no default there; LM Studio / Ollama show up above when present
+                         ("  (recommended)" if os.name == "nt" or m.strata_installed() else "")))
         for url, models in self.lan:
             opts.append(("lan", (url, models), url, f"on the network, {len(models or [])} models"))
         if had and not m.is_strata(had) and not any(m.same_url(had, x["base"]) for x in self.found):
@@ -736,7 +753,7 @@ class Setup:
     def append(self, msg, kind):
         if not hasattr(self, "text"):
             return
-        sym = {"ok": "✓ ", "warn": "! ", "err": "✗ "}.get(kind, "   ")
+        sym = {"ok": MARK + " ", "warn": "! ", "err": CROSS + " "}.get(kind, "   ")
         self.text.configure(state="normal")
         self.text.insert("end", sym + msg + "\n", kind or "note")
         self.text.see("end")
@@ -772,7 +789,7 @@ class Setup:
                                  "maxedcode uses the new server from its next start.")
             self.say_status("done", "ok")
         for i, lb in enumerate(self.step_labels):
-            lb.configure(fg=SIDE_FG, text="✓  " + self.steps[i])
+            lb.configure(fg=SIDE_FG, text=MARK + "  " + self.steps[i])
         self.b_back.configure(state="disabled")
         self.b_cancel.configure(state="normal", text="Close")
         app = root / "maxedcode app.bat" if self.m.WINDOWS else self.dest / "bin" / "maxed"

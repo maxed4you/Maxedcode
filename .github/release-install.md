@@ -17,7 +17,15 @@ maxedcode
 code-signing certificate, so Windows may say "Windows protected your PC": **More info → Run anyway**. If Smart App
 Control blocks it, use the PowerShell or npm install.
 
-**Linux / macOS** (Python 3.10+; Debian/Ubuntu also need `python3-venv`):
+**Linux / macOS** (nothing to install first: without a usable Python 3.10+ setup fetches its own):
+
+Linux (Ubuntu and Debian come with `wget`, not `curl`):
+
+```sh
+wget -qO- https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh
+```
+
+macOS (or any system with `curl`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh

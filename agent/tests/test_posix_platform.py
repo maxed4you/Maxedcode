@@ -348,6 +348,21 @@ class PtyTests(unittest.TestCase):
 class AppWindowTests(unittest.TestCase):
     """--app on macOS / Linux: a pywebview window when it can be had, else the default browser."""
 
+    def test_wayland_first_and_the_x11_package_hint(self):
+        # live Ubuntu 24.04 (X11): Qt could not load "xcb" without libxcb-cursor0; with it the window opened
+        from maxedcode.webapp import native
+        with patch.object(native.sys, "platform", "linux"):
+            self.assertEqual(native.qt_platform({"WAYLAND_DISPLAY": "wayland-0"}), "wayland;xcb")
+            self.assertIsNone(native.qt_platform({"DISPLAY": ":0"}))
+            self.assertEqual(native.qt_platform({"QT_QPA_PLATFORM": "offscreen"}), "offscreen")
+            with patch.object(native, "xcb_cursor_missing", return_value=True):
+                self.assertIn("libxcb-cursor0", native.window_hint({"DISPLAY": ":0"}))
+                self.assertEqual(native.window_hint({"WAYLAND_DISPLAY": "wayland-0"}), "")
+            with patch.object(native, "xcb_cursor_missing", return_value=False):
+                self.assertEqual(native.window_hint({"DISPLAY": ":0"}), "")
+        with patch.object(native.sys, "platform", "darwin"):
+            self.assertEqual(native.window_hint({}), "")
+
     def test_choose_window_or_browser(self):
         env = {"DISPLAY": ":0"}
         with patch.object(native, "webview_module", lambda: object()):

@@ -642,7 +642,8 @@ def choose_server(cur):
         if not any(x["kind"] == "strata" for x in found):
             opts.append(("strata", None, "Strata on this computer",
                          ("installed, not running" if strata_installed() else "not installed, get it later") +
-                         "  (recommended)"))
+                         # Linux / macOS: Strata is no default there; LM Studio / Ollama show up above when present
+                         ("  (recommended)" if os.name == "nt" or strata_installed() else "")))
         if had and not is_strata(had) and not any(same_url(had, x["base"]) for x in found):
             opts.append(("keep", None, "Keep the current server", had))
         if not found and shutil.which("winget") and not ARGS.yes:
@@ -1479,6 +1480,11 @@ def window_package(py):
     r = subprocess.run([str(py), "-c", WINDOW_PROBE[system]], capture_output=True, text=True)
     if r.returncode == 0:
         say("pywebview installed: maxed app opens its own window", "ok")
+        import ctypes.util
+        if system == "linux" and ctypes.util.find_library("xcb-cursor") is None:
+            # Qt under X11 needs it and Ubuntu / Debian desktops lack it (Wayland sessions do not need it)
+            say("on an X11 desktop the window also needs one system package: sudo apt install libxcb-cursor0 "
+                "(Fedora / Arch: xcb-util-cursor); without it the app opens in the web browser", "warn")
         return True
     say("the app's own window cannot load here (" + ((r.stderr.strip().splitlines() or ["?"])[-1])[:160] +
         "): maxed app opens it in your web browser", "warn")

@@ -89,7 +89,15 @@ All three find Python 3.10+ (or install Python 3.12 for you), look for a model s
 the CLI, make the shortcuts and add `maxed` to PATH. Setup never starts a model server for you: if yours isn't
 running, its address is saved and maxedcode connects once you start it.
 
-**Linux / macOS:**
+**Linux / macOS:** nothing needs to be installed first, and setup never asks for sudo.
+
+Linux (Ubuntu and Debian come with `wget`, not `curl`):
+
+```sh
+wget -qO- https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh
+```
+
+macOS (or any system with `curl`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh

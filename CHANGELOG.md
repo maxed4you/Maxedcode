@@ -4,7 +4,8 @@
 
 **maxedcode now runs on Linux and macOS too.** One package for all three systems: `npm install -g maxedcode`
 finds out which one it is on. Or one line in a terminal:
-`curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh`.
+`wget -qO- https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh` on Linux
+(Ubuntu has no `curl` out of the box), `curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh` on macOS.
 
 ### Linux / macOS
 - **Setup needs nothing installed first and never asks for sudo.** It uses your Python 3.10+ if it can make a

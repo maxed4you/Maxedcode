@@ -1,7 +1,8 @@
 #!/bin/sh
 # maxedcode one-line install for Linux and macOS:
 #
-#   curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh      (Linux: Ubuntu / Debian ship wget, not curl)
+#   curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh     (macOS)
 #
 # It finds Python 3.10+ that can make a venv (installer/bootstrap.sh: when there is none, uv and its Python 3.12
 # go to ~/.maxedcode/uv, no sudo), downloads maxedcode from GitHub and runs its installer with no questions: the program in

@@ -24,6 +24,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -309,6 +310,30 @@ def guis():
     return [None] if sys.platform == "darwin" else [None, "qt", "gtk"]
 
 
+def xcb_cursor_missing():
+    """Linux: Qt 6 under X11 needs libxcb-cursor0, which Ubuntu / Debian desktops do not install (a live Ubuntu 24.04
+    showed "Could not load the Qt platform plugin xcb"). Wayland sessions do not need it."""
+    if not sys.platform.startswith("linux"):
+        return False
+    import ctypes.util
+    return ctypes.util.find_library("xcb-cursor") is None
+
+
+def qt_platform(env):
+    """QT_QPA_PLATFORM for the window: Wayland first in a Wayland session (no X11 libraries needed), else X11."""
+    if env.get("QT_QPA_PLATFORM") or not sys.platform.startswith("linux"):
+        return env.get("QT_QPA_PLATFORM")
+    return "wayland;xcb" if env.get("WAYLAND_DISPLAY") else None
+
+
+def window_hint(env=None):
+    """One line for the user when the own window could not open on Linux and a package would fix it, else ''."""
+    env = os.environ if env is None else env
+    if sys.platform.startswith("linux") and not env.get("WAYLAND_DISPLAY") and xcb_cursor_missing():
+        return "for its own window: sudo apt install libxcb-cursor0 (Fedora / Arch: xcb-util-cursor)"
+    return ""
+
+
 def window_process(url, gui=None):
     """One try at the window in a process of its own: a backend that cannot start (missing libraries, no display)
     may abort the whole process, and nothing of it must reach the user's screen; its output goes to
@@ -317,6 +342,9 @@ def window_process(url, gui=None):
     cmd = [sys.executable, "-m", "maxedcode.webapp.native", "--window", url] + (["--gui", gui] if gui else [])
     env = {**os.environ, "PYTHONPATH": str(AGENT_DIR) + os.pathsep + os.environ.get("PYTHONPATH", ""),
            "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    qpa = qt_platform(env)
+    if qpa:
+        env["QT_QPA_PLATFORM"] = qpa
     shown = False
     try:
         with open(APP_HOME / "window.log", "ab") as log:
@@ -364,7 +392,12 @@ def launch(argv):
         # no browser here (an SSH session): the address is printed, the server stays until stopped
         say(f"open this address in a browser: {url}")
         return 0
-    say("opened in your web browser")
+    hint = window_hint() if how == "window" else ""
+    say("opened in your web browser" + (f"; {hint}" if hint else ""))
+    if hint and not sys.stdout.isatty():
+        # started from the app menu: no terminal shows the line above
+        with suppress(Exception):
+            plat.notify("maxedcode opened in your web browser", hint)
     quit_server(url, browser=True)
     return 0
 
