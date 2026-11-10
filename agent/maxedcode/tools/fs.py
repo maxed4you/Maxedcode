@@ -362,10 +362,10 @@ def tool_read_dir(root, small=4000, budget=14000, depth=3, per_dir=(60, 15, 8), 
                     continue
                 if is_dir:
                     if e.name in SKIP_DIRS or blocked(p, read=True):
-                        lines.append(f"{rel}\\  ({'protected' if blocked(p, read=True) else 'skipped'})")
+                        lines.append(f"{rel}{os.sep}  ({'protected' if blocked(p, read=True) else 'skipped'})")
                         continue
                     sub_d, sub_f = _entries(p)
-                    lines.append(f"{rel}\\  ({len(sub_d)} folders, {len(sub_f)} files)")
+                    lines.append(f"{rel}{os.sep}  ({len(sub_d)} folders, {len(sub_f)} files)")
                     nxt.append(p)
                     continue
                 if blocked(p, read=True):

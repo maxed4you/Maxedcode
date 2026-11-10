@@ -18,6 +18,7 @@ from textual.widgets import Static
 from textual.widgets import TextArea
 from textual.widgets import OptionList
 import json
+import os
 import re
 from ..state import TITLES
 from ..tools.fs import diff_text, prev_content
@@ -525,7 +526,7 @@ def dropped_paths(raw):
     for m in re.finditer(r'"([^"]+)"|\'([^\']+)\'|(\S+)', text):
         token = m.group(1) or m.group(2) or m.group(3)
         if token.lower().startswith("file:///"):
-            token = unquote(token[8:])
+            token = unquote(token[8:] if os.name == "nt" else token[7:])
         p = Path(token)
         try:
             if not (p.is_absolute() and p.exists()):

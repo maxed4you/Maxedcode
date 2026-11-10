@@ -79,7 +79,8 @@ class LocalQualityTests(unittest.TestCase):
         (self.root / "Strata" / "START-HERE.bat").write_text("@echo off\n", encoding="utf-8")
         (self.root / "run.cmd").write_text("start strata\n", encoding="utf-8")
         text = fs.tool_read(str(self.root))
-        for name in ("Models\\", "Strata\\", "packs\\", "run.cmd", "Strata\\START-HERE.bat"):
+        for name in ("Models" + os.sep, "Strata" + os.sep, "packs" + os.sep, "run.cmd",
+                     os.path.join("Strata", "START-HERE.bat")):
             self.assertIn(name, text)
         self.assertIn("start strata", text)
         self.assertNotIn("mod1.py", text)

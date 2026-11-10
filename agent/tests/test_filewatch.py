@@ -13,7 +13,7 @@ from pathlib import Path
 _TEST_HOME = tempfile.TemporaryDirectory(prefix="maxedcode-filewatch-tests-")
 os.environ["AGENT_HOME"] = _TEST_HOME.name
 
-from maxedcode import filewatch
+from maxedcode import filewatch, shelltool
 from maxedcode.filewatch import FileWatch, named_files, watched_files
 from maxedcode.util import wire
 
@@ -60,8 +60,8 @@ class FileWatchTests(unittest.TestCase):
     def test_a_named_file_outside_the_folder_is_watched(self):
         with tempfile.TemporaryDirectory() as other:
             out = os.path.join(other, "report.txt")
-            cmd = f'Set-Content -Path "{out}" -Value hi'
-            files = watched_files("powershell", {"command": cmd})
+            cmd = f'Set-Content -Path "{out}" -Value hi' if os.name == "nt" else f'echo hi > "{out}"'
+            files = watched_files(shelltool.NAME, {"command": cmd})
             self.assertEqual(files, [out])
             w = FileWatch()
             snap = w.before(self.root, files)
@@ -162,6 +162,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
              patch.object(agent.mcp, "cfg", return_value={}), \
              patch.object(app_module.hooks, "run", new=AsyncMock(return_value=hook)), \
              patch.dict(S, {"auto": True, "mode": "auto"}):
+            work = os.path.realpath(work)       # macOS: /var/folders is /private/var/folders
             os.chdir(work)
             try:
                 async with agent.run_test(size=(120, 40)):

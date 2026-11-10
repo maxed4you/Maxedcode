@@ -319,7 +319,7 @@ def _call_brief(name, args):
     a = args if isinstance(args, dict) else {}
     arg = next((str(a[k]) for k in ("path", "pattern", "command", "query", "url", "code") if a.get(k)), "")
     if a.get("path"):
-        arg = Path(arg).name or arg
+        arg = (Path(arg).name if os.name == "nt" else re.split(r"[\\/]", arg.rstrip("\\/"))[-1]) or arg
     arg = re.sub(r"\s+", " ", arg).strip()
     return f"{name} {arg[:40] + '…' if len(arg) > 40 else arg}".strip()
 
