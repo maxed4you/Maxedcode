@@ -471,7 +471,7 @@ def scan(key=""):
     rest = [{**x, "running": False, "base": default_base(x["kind"])} for x in installed() if x["kind"] not in kinds]
     for x in up:
         same = next((i for i in installed() if i["kind"] == x["kind"]), None) if x["kind"] else None
-        x["start"], x["how"] = None, (same or {}).get("how", "")
+        x["start"], x["how"], x["path"] = None, (same or {}).get("how", ""), (same or {}).get("path", "")
     return up + rest
 
 

@@ -126,6 +126,12 @@
     setupModels: ['моделей', 'models'], setupAgain: ['Искать снова', 'Look again'], setupLater: ['Позже', 'Later'],
     setupUrl: ['Другой адрес (IP или URL)', 'Another address (IP or URL)'], setupFind: ['Найти серверы', 'Find servers'],
     setupNoStart: ['Не ответил. Запустите его вручную: ', 'Did not answer. Start it yourself: '],
+    setupRuns: ['запуск', 'starts with'], setupFrom: ['программа', 'program'],
+    setupStartHint: ['Запустить сейчас (у сервера откроется своё окно)', 'Start it now (the server opens its own window)'],
+    setupUseHint: ['Только запомнить адрес, сервер можно запустить позже', 'Only keep the address; start the server later'],
+    setupRecent: ['Недавние', 'Recent'], setupFound: ['На этом компьютере', 'On this PC'],
+    recentServers: ['Недавние серверы', 'Recent servers'], recentSub: ['Последние, с которыми работали; ключ облака нужно ввести снова', 'The last ones used; a cloud API needs its key again'],
+    recentUse: ['Вернуть', 'Switch back'],
     newChat: ['Новая сессия', 'New session'], newChatKey: ['Новая сессия (Ctrl + Alt + N)', 'New session (Ctrl + Alt + N)'],
     workspaces: ['Проекты', 'Projects'], defaultWs: ['Общая папка', 'Shared folder'], addFolder: ['Добавить проект', 'Add a project'],
     sharedFolder: ['Папка чатов без проекта', 'Folder of chats without a project'],
@@ -333,7 +339,7 @@
     try { var v = localStorage.getItem('mx.' + key); return v === null ? fallback : JSON.parse(v) } catch (e) { return fallback }
   }
   function setPref(key, value) { try { localStorage.setItem('mx.' + key, JSON.stringify(value)) } catch (e) {} }
-  var lang = pref('lang', 'ru')
+  var lang = pref('lang', 'en')
   // Once: while Plan/Auto was one switch for the whole window, picking Plan in a chat also saved it as the
   // default, and every chat went on in Plan. Back to Auto, as the old window ran.
   if (!pref('seatsPerChat', false)) {
@@ -3506,6 +3512,32 @@
       if (!server.has_key) keyInput.focus()
     })))
     rows.appendChild(row(t('base_url'), t('base_urlSub'), urlInput))
+    // the servers used before this one: one click switches back (a cloud one only fills the address: its key)
+    var recent = server.recent || []
+    if (recent.length) {
+      var rbox = el('div', 'recent-list')
+      recent.forEach(function (x) {
+        var label = (x.label ? x.label + ' · ' : '') + x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '')
+        var b = rbox.appendChild(el('button', 'btn small outline recent-btn', label))
+        b.title = t('recentUse') + ': ' + x.base_url + (x.model ? ' · ' + x.model : '')
+        b.onclick = function () {
+          if (x.cloud) {
+            urlInput.value = x.base_url
+            change('base_url', x.base_url)
+            if (x.model) change('model', x.model)
+            return keyInput.focus()
+          }
+          b.disabled = true
+          api('/api/settings', { base_url: x.base_url, server: x.server || null, model: x.model || null }).then(function (d) {
+            if (d.error) { b.disabled = false; status.textContent = d.error; return }
+            draft = {}
+            gotSettings(d)
+            renderAgent(t('saved'))
+          })
+        }
+      })
+      rows.appendChild(row(t('recentServers'), t('recentSub'), rbox, true))
+    }
     var keyInput = inputEl(server.has_key ? t('keySaved') + (server.key_end ? ' …' + server.key_end : '') : t('keyNone'), '')
     keyInput.type = 'password'
     keyInput.autocomplete = 'off'
@@ -3765,13 +3797,38 @@
     var card = box.appendChild(el('div', 'setup-card'))
     card.appendChild(el('h2', '', t('setupTitle')))
     card.appendChild(el('p', 'intro', t('setupIntro')))
+    var recent = ((state.settings && state.settings.server) || {}).recent || [], recentBtn = null
+    if (recent.length) {
+      card.appendChild(el('div', 'setup-group', t('setupRecent')))
+      var rlist = card.appendChild(el('div', 'cli-list'))
+      recent.forEach(function (x) {
+        var r = rlist.appendChild(el('div', 'cli-row setup-server'))
+        var info = r.appendChild(el('div', 'setup-info'))
+        var top = info.appendChild(el('div', 'setup-top'))
+        top.appendChild(el('span', 'm', x.label || x.base_url))
+        top.appendChild(el('span', 's', x.base_url + (x.model ? ' · ' + x.model : '')))
+        var b = r.appendChild(el('div', 'setup-acts')).appendChild(el('button', 'btn small outline', t('setupUse')))
+        if (!recentBtn && !x.cloud) recentBtn = b
+        b.onclick = function () {
+          if (!x.cloud) return save({ base: x.base_url, kind: x.server }, [], x.model)
+          // a cloud API: its key is not kept, so Settings -> Models opens with the address filled in
+          box.hidden = true
+          draft = { base_url: x.base_url }
+          if (x.model) draft.model = x.model
+          openSection('agent')
+          setTimeout(function () { var k = document.querySelector('#tab-agent input[type=password]'); if (k) k.focus() }, 50)
+        }
+      })
+      card.appendChild(el('div', 'setup-group', t('setupFound')))
+    }
     var list = card.appendChild(el('div', 'cli-list'))
     var note = card.appendChild(el('div', 'muted small', t('setupScan')))
-    function save(x, models) {
+    function save(x, models, model) {
       var body = { base_url: x.base, server: x.kind || null }
       var many = (models || []).length > 1
       // LM Studio / Ollama list every downloaded model: pin the loaded one (another id makes them load it)
       if (many && (x.kind === 'lmstudio' || x.kind === 'ollama')) body.model = x.loaded || models[0]
+      if (model) body.model = model
       api('/api/settings', body).then(function (d) {
         if (d.error) { note.textContent = d.error; return }
         box.hidden = true
@@ -3781,31 +3838,44 @@
     function draw(found) {
       list.innerHTML = ''
       note.textContent = found.length ? '' : t('setupNone')
-      // one main action: the first server listed; the others, another address and "search again" are secondary
-      found.forEach(function (x, i) {
+      // one main action (filled): the first server running on this PC, else (none running) the last one used,
+      // else the first one found. Any server can be chosen without starting it ("Use" keeps the address);
+      // starting is a separate, quieter action.
+      var main = found.filter(function (x) { return x.running })[0] || (recent.length ? null : found[0])
+      if (recentBtn) recentBtn.className = 'btn small' + (main ? ' outline' : '')
+      found.forEach(function (x) {
         var models = x.models || []
         var sub = x.running ? t('setupRunning') + ': ' + (x.loaded || (models.length === 1 ? models[0] : models.length + ' ' + t('setupModels'))) + (x.ctx ? ' · ' + x.ctx + ' ' + t('tokens') : '')
           : t('setupInstalled')
-        var btn = el('button', 'btn small' + (i ? ' outline' : ''), x.running ? t('setupUse') : t('setupStart'))
-        btn.onclick = function () {
-          if (x.running) return save(x, models)
-          btn.disabled = true
-          btn.textContent = t('setupStarting')
-          var failed = function () {
-            btn.disabled = false
-            btn.textContent = t('setupStart')
-            note.textContent = t('setupNoStart') + (x.how || '')
+        var r = list.appendChild(el('div', 'cli-row setup-server'))
+        var info = r.appendChild(el('div', 'setup-info'))
+        var top = info.appendChild(el('div', 'setup-top'))
+        top.appendChild(el('span', 'm', x.label))
+        top.appendChild(el('span', 's', sub + ' · ' + x.base))
+        // exactly what runs: the start command of an installed server, the program folder of a running one
+        var starts = x.start && x.start.length, run = starts ? x.start.join(' ') : x.path || ''
+        if (run) info.appendChild(el('div', 'setup-path', (starts ? t('setupRuns') : t('setupFrom')) + ': ' + run)).title = run
+        var acts = r.appendChild(el('div', 'setup-acts')), use
+        if (!x.running && starts) {
+          var go = acts.appendChild(el('button', 'btn small link', t('setupStart')))
+          go.title = t('setupStartHint')
+          go.onclick = function () {
+            go.disabled = use.disabled = true
+            go.textContent = t('setupStarting')
+            var failed = function () {
+              go.disabled = use.disabled = false
+              go.textContent = t('setupStart')
+              note.textContent = t('setupNoStart') + (x.how || '')
+            }
+            api('/api/servers', { start: x.kind }).then(function (r) {
+              if (r && r.base) { x.base = r.base; return save(x, []) }
+              failed()
+            }, failed)        // a dropped request too: the button no longer stays "Starting…"
           }
-          api('/api/servers', { start: x.kind }).then(function (r) {
-            if (r && r.base) { x.base = r.base; return save(x, []) }
-            failed()
-          }, failed)        // a dropped request too: the button no longer stays "Starting…"
         }
-        if (!x.running && !x.start) btn.disabled = true
-        var r = list.appendChild(el('div', 'cli-row'))
-        r.appendChild(el('span', 'm', x.label))
-        r.appendChild(el('span', 's', sub + ' · ' + x.base))
-        r.appendChild(btn)
+        use = acts.appendChild(el('button', 'btn small' + (x === main ? '' : ' outline'), t('setupUse')))
+        if (!x.running) use.title = t('setupUseHint') + (x.how ? ' (' + x.how + ')' : '')
+        use.onclick = function () { save(x, models) }
       })
     }
     var add = card.appendChild(el('div', 'cli-add')), url = el('input', 'field')
@@ -3822,7 +3892,7 @@
     add.appendChild(url)
     add.appendChild(go)
     var actions = card.appendChild(el('div', 'save-row'))
-    var again = el('button', 'btn small outline', t('setupAgain')), later = el('button', 'btn small link', t('setupLater'))
+    var again = el('button', 'btn small link', t('setupAgain')), later = el('button', 'btn small link', t('setupLater'))
     again.onclick = scan
     later.onclick = function () { box.hidden = true }
     actions.appendChild(again)

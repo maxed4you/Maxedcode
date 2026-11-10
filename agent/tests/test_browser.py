@@ -253,9 +253,9 @@ class LangTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "lang.txt"
             with patch.object(host, "LANG_FILE", f):
-                self.assertEqual(host.app_lang(), "")          # never set: the browser's own language
+                self.assertEqual(host.app_lang(), "en")        # never set: English, as the window starts
                 f.write_text("xx", encoding="utf-8")
-                self.assertEqual(host.app_lang(), "")          # unknown values are ignored
+                self.assertEqual(host.app_lang(), "en")        # unknown values are ignored
                 f.write_text("en", encoding="utf-8")
                 sent = []
 

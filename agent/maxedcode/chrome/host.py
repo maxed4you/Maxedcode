@@ -72,12 +72,12 @@ def log(text):
 
 
 def app_lang():
-    """The maxedcode window's language ("ru" / "en"); "" before the window ever ran: the browser's own language."""
+    """The maxedcode window's language ("ru" / "en"); English before the window ever ran (as the window starts)."""
     try:
         lang = LANG_FILE.read_text(encoding="utf-8").strip()
     except OSError:
-        return ""
-    return lang if lang in ("ru", "en") else ""
+        return "en"
+    return lang if lang in ("ru", "en") else "en"
 
 
 def watch_lang(bridge, every=1.0):

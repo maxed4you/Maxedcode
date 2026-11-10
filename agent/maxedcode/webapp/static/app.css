@@ -534,7 +534,15 @@ body.resizing iframe { pointer-events: none; }
 .setup-card { width: min(640px, 94vw); max-height: 86vh; overflow-y: auto; background: var(--panel); border-radius: 24px; padding: 26px; box-shadow: var(--hairline) 0 0 0 0.5px, var(--shadow); }
 .setup-card h2 { font-size: 18px; margin: 0 0 6px; color: var(--strong); }
 .setup-card .intro { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
-.setup-card .cli-row .btn { margin-left: auto; flex: none; }
+.setup-card .cli-row .btn { flex: none; }
+.setup-card .setup-server { padding: 8px; }
+.setup-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.setup-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.setup-path { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-acts { flex: none; display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.setup-group { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 8px 2px; }
+.recent-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.recent-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .setup-card .save-row { margin-top: 14px; display: flex; gap: 8px; }
 .btn.ghost { background: var(--raised); color: var(--text); }
 .br-guide { margin: 10px 0 4px; gap: 10px; }

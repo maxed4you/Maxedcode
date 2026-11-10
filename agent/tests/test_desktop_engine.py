@@ -63,15 +63,18 @@ class AppSettingsTests(unittest.TestCase):
     def setUp(self):
         import tempfile
         from pathlib import Path
-        from maxedcode import appsettings
+        from maxedcode import appsettings, servers
         self.s = appsettings
         root = Path(tempfile.mkdtemp())
         self.user, self.cfg, self.state = root / "settings.json", root / "config.json", root / "state.json"
         self.memory = root / "memory" / "MEMORY.md"
+        self.recent = root / "recent_servers.json"
         self.user.write_text('{"max_turns": 30, "model": "pinned"}', encoding="utf-8")
         self.state.write_text('{"effort": "medium", "sampling": {"top_k": 40}}', encoding="utf-8")
         for p in (patch.object(appsettings, "USER_SETTINGS", self.user), patch.object(appsettings, "CONFIG_FILE", self.cfg),
                   patch.object(appsettings, "MEMORY_FILE", self.memory),
+                  patch.object(appsettings, "RECENT_FILE", self.recent),
+                  patch.object(servers, "find_base", side_effect=lambda addr, key="", timeout=2: addr),
                   patch.object(appsettings.config, "STATE_FILE", self.state),
                   patch.object(appsettings, "server_models", return_value=[]),
                   patch.object(appsettings.config, "resolve_server", return_value={"ctx": 65536, "model": "local"})):
@@ -102,6 +105,22 @@ class AppSettingsTests(unittest.TestCase):
         self.s.apply({"top_k": 10, "top_p": 0.9, "min_p": 0.05})
         with self.assertRaises(ValueError):
             self.s.apply({"top_p": 3})
+
+    def test_recent_servers_keep_the_last_three_before_the_current_one(self):
+        self.user.write_text("{}", encoding="utf-8")
+        for n in range(1, 6):
+            self.s.apply({"base_url": f"http://h{n}:1/v1", "server": "lmstudio", "model": f"m{n}"})
+        recent = self.s.get()["server"]["recent"]
+        self.assertEqual([x["base_url"] for x in recent], ["http://h4:1/v1", "http://h3:1/v1", "http://h2:1/v1"])
+        self.assertEqual((recent[0]["model"], recent[0]["label"], recent[0]["cloud"]), ("m4", "LM Studio", False))
+        self.assertNotIn("api_key", self.recent.read_text(encoding="utf-8"))
+        # switching back moves it to the front, without a copy
+        self.s.apply({"base_url": "http://h2:1/v1", "model": "m2"})
+        self.assertEqual([x["base_url"] for x in self.s.get()["server"]["recent"]],
+                         ["http://h5:1/v1", "http://h4:1/v1", "http://h3:1/v1"])
+        # a server set by the installer or the CLI (config.json) is kept when the window reads its settings
+        self.cfg.write_text('{"base_url": "http://cli:8080/v1"}', encoding="utf-8")
+        self.assertEqual(self.s.get()["server"]["recent"][0]["base_url"], "http://h2:1/v1")
 
     def test_a_bad_value_writes_nothing(self):
         with self.assertRaises(ValueError) as error:

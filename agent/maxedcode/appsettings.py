@@ -24,6 +24,10 @@ USER_SETTINGS = Path.home() / ".maxedcode" / "settings.json"     # where config.
 CONFIG_FILE = config.APP_DIR / "config.json"
 MEMORY_FILE = config.MEM_DIR / "MEMORY.md"                      # memory.index_files(): global, every session
 MEMORY_CHARS = 20_000
+# The servers used last, newest first (the current one + RECENT - 1 before it): switching back without retyping.
+# Its own file: the CLI rewrites state.json whole. No keys in it.
+RECENT_FILE = config.HOME / "recent_servers.json"
+RECENT = 4
 
 
 def _text(value):
@@ -109,8 +113,38 @@ def server_models():
     return []
 
 
+def _same(a, b):
+    return str(a or "").rstrip("/").lower() == str(b or "").rstrip("/").lower()
+
+
+def recent_servers():
+    """[{"base_url", "server", "model"}], newest first."""
+    with suppress(Exception):
+        data = json.loads(RECENT_FILE.read_text(encoding="utf-8"))
+        return [x for x in data if isinstance(x, dict) and x.get("base_url")][:RECENT]
+    return []
+
+
+def remember(user=None, cfg=None):
+    """Puts the chosen server (settings.json over config.json) first in RECENT_FILE; written only on a change,
+    so a server set by the installer or the CLI is kept too, the next time the window reads its settings."""
+    user = _read(USER_SETTINGS) if user is None else user
+    cfg = _read(CONFIG_FILE) if cfg is None else cfg
+    base = user.get("base_url", cfg.get("base_url"))
+    if not base or os.environ.get("AGENT_BASE_URL"):
+        return
+    entry = {"base_url": base, "server": user.get("server", cfg.get("server")) or "",
+             "model": user.get("model", cfg.get("model")) or ""}
+    old = recent_servers()
+    if old and old[0] == entry:
+        return
+    with suppress(OSError):
+        _write(RECENT_FILE, [entry] + [x for x in old if not _same(x["base_url"], base)][:RECENT - 1])
+
+
 def get():
     user, cfg, state = _read(USER_SETTINGS), _read(CONFIG_FILE), _read(config.STATE_FILE)
+    remember(user, cfg)
     memory = ""
     with suppress(OSError):
         memory = MEMORY_FILE.read_text(encoding="utf-8")
@@ -145,6 +179,10 @@ def get():
     # nothing chose a server yet (a git clone started as the window): the page opens the first-start picker
     setup = not (values["base_url"] or os.environ.get("AGENT_BASE_URL"))
     server["kind"] = detected.get("kind", "")
+    # the ones before the current server; a cloud one needs its key again (keys are not kept here)
+    server["recent"] = [{**x, "label": servers.LABELS.get(x["server"], "") or x["server"],
+                         "cloud": bool(servers.cloud_kind(x["base_url"]))}
+                        for x in recent_servers() if not _same(x["base_url"], values["base_url"])][:RECENT - 1]
     return {"values": values, "effective": effective, "server": server, "files": files, "setup_needed": setup}
 
 
@@ -194,6 +232,8 @@ def apply(changes):
         _write(USER_SETTINGS, user)
     if "cfg" in touched:
         _write(CONFIG_FILE, cfg)
+    if touched & {"user", "cfg"}:
+        remember(user, cfg)
     if "state" in touched:
         _write(config.STATE_FILE, state)
 

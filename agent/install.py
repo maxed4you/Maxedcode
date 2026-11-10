@@ -1536,6 +1536,9 @@ def run_install(dest, cur, base, key, models, kind, model, ctx, want):
     stale = []
     if not ARGS.configure:
         copy_files(dest)
+        if os.environ.get("MX_DIRFILE"):          # npm (bin/maxedcode.js): the folder this setup installed to
+            with suppress(OSError):
+                Path(os.environ["MX_DIRFILE"]).write_text(str(dest.parent), encoding="utf-8")
         for old in legacy_installs(dest):
             stale += move_legacy(old, dest)
         rehost(dest)

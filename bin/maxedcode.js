@@ -39,14 +39,22 @@ function findPython () {
 
 function install (dir, wizard) {
   const args = [path.join(ROOT, 'agent', 'install.py'), '--dir', dir]
-  args.push(wizard && process.stdin.isTTY ? '--console' : '--yes')
+  // the wizard is the setup window (install_gui.py; the console wizard when Tk is missing); no console: no questions
+  if (!(wizard && process.stdin.isTTY)) args.push('--yes')
   // extra setup options, as for install.ps1: MAXEDCODE_ARGS="--base-url 192.168.0.10:1234 --model qwen3"
   if (process.env.MAXEDCODE_ARGS) args.push.apply(args, process.env.MAXEDCODE_ARGS.split(/\s+/).filter(Boolean))
-  console.log(wizard ? '\n  maxedcode: first start, setting it up ...' : '\n  maxedcode: updating to ' + pkg.version + ' ...')
-  const r = spawnSync(findPython(), args, { stdio: 'inherit' })
+  console.log(wizard ? '\n  maxedcode: first start, opening the setup window ...' : '\n  maxedcode: updating to ' + pkg.version + ' ...')
+  // the setup window may install to another folder: install.py writes the one it used to MX_DIRFILE
+  const dirFile = path.join(os.tmpdir(), 'maxedcode-npm-dir-' + process.pid + '.txt')
+  const r = spawnSync(findPython(), args, { stdio: 'inherit', env: Object.assign({}, process.env, { MX_DIRFILE: dirFile }) })
+  let used = ''
+  try { used = fs.readFileSync(dirFile, 'utf8').trim() } catch (e) {}
+  fs.rmSync(dirFile, { force: true })
   if (r.status !== 0) fail('setup stopped (code ' + r.status + '); the log: %TEMP%\\maxedcode-setup.log')
+  if (!used) return dir                          // the setup window was closed before installing
   fs.mkdirSync(HOME, { recursive: true })
-  fs.writeFileSync(STAMP, JSON.stringify({ version: pkg.version, dir: dir }, null, 2))
+  fs.writeFileSync(STAMP, JSON.stringify({ version: pkg.version, dir: used }, null, 2))
+  return used
 }
 
 // maxedcode uninstall [--purge]: the program (install.py --uninstall asks first), then this npm package.
@@ -75,19 +83,20 @@ function main () {
   if (args[0] === '--npm-version') return console.log(pkg.version)
   const stamp = readStamp()
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-  const dir = process.env.MAXEDCODE_DIR || stamp.dir || path.join(local, 'Programs', 'maxedcode')
-  const maxed = path.join(dir, 'program', 'bin', 'maxed.bat')
+  let dir = process.env.MAXEDCODE_DIR || stamp.dir || path.join(local, 'Programs', 'maxedcode')
+  const bat = d => path.join(d, 'program', 'bin', 'maxed.bat')
   if (args[0] === 'uninstall') return uninstall(dir, args.slice(1))
   if (args[0] === 'setup') {                       // maxedcode setup: the setup wizard again
-    install(dir, true)
+    dir = install(dir, true)
     args = args.slice(1)
     if (!args.length) return
-  } else if (!fs.existsSync(maxed)) {
-    install(dir, true)
+  } else if (!fs.existsSync(bat(dir))) {
+    dir = install(dir, true)
   } else if (stamp.version !== pkg.version) {
-    install(dir, false)
+    dir = install(dir, false)
   }
-  if (!fs.existsSync(maxed)) fail('setup did not create ' + maxed)
+  const maxed = bat(dir)
+  if (!fs.existsSync(maxed)) fail('maxedcode is not installed yet (was the setup window closed?); run maxedcode again')
   const line = '"' + [quote(maxed)].concat(args.map(quote)).join(' ') + '"'
   const r = spawnSync('cmd.exe', ['/d', '/s', '/c', line], { stdio: 'inherit', windowsVerbatimArguments: true })
   process.exit(r.status === null ? 1 : r.status)

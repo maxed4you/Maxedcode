@@ -146,7 +146,8 @@ agent/
    │                     independent reviewer → up to AGENT_ULTRA_ROUNDS=2 fix rounds; the report goes inside a
    │                     not-yet-sent user message (cache intact). Small tasks and plan mode — a normal turn on high
    ├─ headless.py        --print mode: its own loop (up to max_turns) and its own exec_tool
-   ├─ appsettings.py     app window "Settings → maxedcode": server, model (auto), temperature, effort, shared memory
+   ├─ appsettings.py     app window "Settings → maxedcode": server, model (auto), temperature, effort, shared memory;
+   │                     the last 3 servers before the current one (~\.maxedcode\recent_servers.json, no keys)
    ├─ appcli.py          app window "Settings → CLI commands": rules, MCP, hooks, memory, skills, commands, subagents, tools
    ├─ webapp/            app window (--app): server.py (stdlib HTTP, turns via headless) + static/ (index.html, app.css, app.js)
    ├─ chrome/            the user's own browser: extension/ (MV3, trimmed-down OpenSidekick), host.py (native messaging,
