@@ -20,8 +20,10 @@ from maxedcode.util import wire
 
 def touch(path, text):
     """Write and push the mtime forward: two writes inside one clock tick must still count as a change."""
+    old = os.stat(path).st_mtime if os.path.exists(path) else 0
     Path(path).write_text(text, encoding="utf-8")
-    t = time.time() + 2
+    # strictly after the previous mtime: setUp and the test may run inside one clock tick (seen on CI)
+    t = max(time.time() + 2, old + 1)
     os.utime(path, (t, t))
 
 
