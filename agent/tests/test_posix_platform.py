@@ -392,7 +392,8 @@ class AppWindowTests(unittest.TestCase):
         self.assertEqual(self.launch("window"), [("window", "http://127.0.0.1:3077/?t=abc"), ("quit", False)])
 
     def test_a_window_that_cannot_start_falls_back_to_the_browser_calmly(self):
-        calls = self.launch("window", shown=False)
+        with patch.object(native, "window_hint", return_value=""):    # the package hint: its own test
+            calls = self.launch("window", shown=False)
         self.assertEqual([c[0] for c in calls], ["window", "browser", "say", "quit"])
         self.assertEqual(calls[2], ("say", "opened in your web browser"))     # one calm line, no error text
         self.assertEqual(calls[-1], ("quit", True))       # a tab: the server exits once no page asks
