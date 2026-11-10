@@ -98,7 +98,7 @@ jobs:
           url=$("$dir/program/bin/maxed" app --no-window | grep -o 'http://[^ ]*' | head -1)
           test -n "$url"
           curl -fsS -c "$RUNNER_TEMP/jar" -b "$RUNNER_TEMP/jar" -L "$url" | grep -q "<title>maxedcode"
-          curl -fsS -b "$RUNNER_TEMP/jar" "${url%%/?*}/api/ping" | grep -q running
+          curl -fsS -b "$RUNNER_TEMP/jar" "${url%%\?*}api/ping" | grep -q running
           "$dir/program/bin/maxed" uninstall --yes
           test ! -e "$dir"
           test ! -e "$HOME/.local/bin/maxed"
