@@ -17,6 +17,12 @@ You get three things:
 - **maxedcode CLI**: the same agent in any terminal (`maxed`), plus `maxed --print "..."` for scripts and CI
 - **browser extension**: the agent works in your own Chrome / Edge
 
+![maxedcode app: a chat with the agent's steps and file changes, a terminal on the right](https://raw.githubusercontent.com/maxed4you/Maxedcode/main/.github/assets/app.png)
+
+| maxedcode CLI | browser extension |
+|---|---|
+| [![maxedcode CLI in a terminal](https://raw.githubusercontent.com/maxed4you/Maxedcode/main/.github/assets/cli.png)](https://raw.githubusercontent.com/maxed4you/Maxedcode/main/.github/assets/cli.png) | [![the maxedcode side panel next to a web page](https://raw.githubusercontent.com/maxed4you/Maxedcode/main/.github/assets/browser.png)](https://raw.githubusercontent.com/maxed4you/Maxedcode/main/.github/assets/browser.png) |
+
 ## Why maxedcode
 
 Most coding agents are tuned for one big cloud model. maxedcode is tuned so that **any** model does good work, and

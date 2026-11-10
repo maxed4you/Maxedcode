@@ -7,6 +7,7 @@
   :root { --bg: #1f1e1d; --card: #2a2927; --ink: #eeeceb; --muted: #a3a19d; --line: #3a3936; --soft: #30302e; --ok: #8fbf6a; --err: #e06c75; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* .big and others set display, which would show them while hidden */
 html, body { height: 100%; }
 body { margin: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--ink);
   font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
