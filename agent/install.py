@@ -1395,6 +1395,15 @@ def remove_files(root):
     return left
 
 
+def answer(prompt):
+    """input() that takes a closed input (NUL counts as a console on Windows; a script) as "" - no."""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        print()
+        return ""
+
+
 def run_uninstall():
     """--uninstall: the program, its shortcuts, PATH entry and browser bridge. Chats, memory and settings
     (~\\.maxedcode) stay unless --purge. -> exit code."""
@@ -1406,7 +1415,7 @@ def run_uninstall():
     print(f"    removes:  {root} (the program, its launchers), its shortcuts, its PATH entry, its browser bridge")
     print(f"    {'removes' if ARGS.purge else 'keeps'}:    {DATA_DIR} (chats, memory, settings)"
           + ("" if ARGS.purge else "  - add --purge to remove them too"))
-    if not ARGS.yes and sys.stdin.isatty() and input("\n  Uninstall? (y/N) ").strip().lower() not in ("y", "yes"):
+    if not ARGS.yes and sys.stdin.isatty() and answer("\n  Uninstall? (y/N) ").lower() not in ("y", "yes"):
         say("cancelled, nothing was removed")
         return 1
     bridge = remove_bridge(root)
@@ -1519,7 +1528,7 @@ def main():
     if not ARGS.configure and not ARGS.no_path:
         opts.append(("path", "Make maxed work in CMD from any folder (add program\\bin to PATH)", True))
     if models is not None:
-        opts.append(("test", "Send a short test request to the model", not ARGS.yes))
+        opts.append(("test", "Send a short test request to the model (loads it now)", False))
     want = {}
     if opts:
         section("Options")

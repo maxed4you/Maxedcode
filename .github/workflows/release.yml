@@ -1,7 +1,9 @@
 # A v* tag (the author's release button, or git tag v1.0.1 && git push origin v1.0.1; package.json and
-# agent/maxedcode/version.py carry the same number) builds Maxedcode_setup.zip and attaches it to the release,
-# then publishes the npm package with the tag's version (trusted publishing: set up once on npmjs.com, package
-# maxedcode -> Settings -> Trusted Publisher -> GitHub Actions, maxed4you/Maxedcode, release.yml).
+# agent/maxedcode/version.py carry the same number) builds Maxedcode_setup.zip and maxedcode.zip, publishes the npm
+# package with the tag's version (trusted publishing: set up once on npmjs.com, package maxedcode -> Settings ->
+# Trusted Publisher -> GitHub Actions, maxed4you/Maxedcode, release.yml), waits until npm really serves it, and only
+# then makes the GitHub release. The release is what installs update themselves from and what people read: made
+# earlier, `npm install -g maxedcode` failed with 404 for the first minutes (and npm's CDN kept that 404 for 5 more).
 name: release
 
 on:
@@ -51,14 +53,6 @@ jobs:
           path: |
             installer/Maxedcode_setup.zip
             installer/maxedcode.zip
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            installer/Maxedcode_setup.zip
-            installer/maxedcode.zip
-          generate_release_notes: true
 
   npm:
     needs: setup-zip
@@ -82,3 +76,43 @@ jobs:
           fi
           npm version "$version" --no-git-tag-version --allow-same-version
           npm publish --access public
+      - name: Wait until npm serves it
+        # nobody asks for the package before this (the release does not exist yet), so no 404 gets cached
+        run: |
+          url="https://registry.npmjs.org/maxedcode/-/maxedcode-${GITHUB_REF_NAME#v}.tgz"
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "$url")" = "200" ]; then echo "on npm: $url"; exit 0; fi
+            sleep 10
+          done
+          echo "::warning::npm does not serve $url after 10 minutes; the release is made anyway"
+
+  release:
+    needs: [setup-zip, npm]
+    # also when npm was skipped (a private repository): the zips still go out
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.setup-zip.result == 'success' && needs.npm.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Maxedcode_setup
+          path: installer
+      - name: Release notes (this version's part of CHANGELOG.md + how to install)
+        shell: pwsh
+        run: |
+          $v = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $log = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($v))[ \t]*\r?\n(.*?)(?=^## |\z)")
+          $what = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "" }
+          $install = (Get-Content .github/release-install.md -Raw).Trim()
+          Set-Content release-notes.md "$what`n`n$install`n" -Encoding utf8
+          "MX_VERSION=$v" >> $env:GITHUB_ENV
+      - name: The GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: maxedcode ${{ env.MX_VERSION }}
+          body_path: release-notes.md
+          files: |
+            installer/Maxedcode_setup.zip
+            installer/maxedcode.zip
+          generate_release_notes: true

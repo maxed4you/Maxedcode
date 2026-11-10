@@ -669,7 +669,7 @@ class Setup:
         if not self.configure and not self.a.no_path:
             rows.append(("path", "Type maxed in any CMD / PowerShell window (adds program\\bin to PATH)", True))
         if models is not None:
-            rows.append(("test", "Send a short test request to the model", True))
+            rows.append(("test", "Send a short test request to the model (loads it now)", False))
         if rows:
             ttk.Label(b, text="Also", style="Bold.TLabel").pack(anchor="w", pady=(self.px(18), self.px(4)))
         for k, text, on in rows:
