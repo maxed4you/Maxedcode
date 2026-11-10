@@ -51,7 +51,7 @@ CYCLE = ("manual", "accept-edits", "auto", "plan")
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 VERBS = ("Thinking", "Analyzing", "Matching", "Decoding", "Predicting", "Counting",
          "Planning", "Synthesizing", "Cross-checking", "Untangling", "Running vectors", "Looking for traces")
-TITLES = {"powershell": "PowerShell", "read_file": "Reading file", "write_file": "Writing file",
+TITLES = {"powershell": "PowerShell", "bash": "Bash", "read_file": "Reading file", "write_file": "Writing file",
           "edit_file": "Editing file", "patch": "Patching file", "apply_diff": "Applying diff", "finish": "Finish turn",
           "tool_search": "MCP tool schema", "grep": "Searching files",
           "py_run": "Python", "py_source": "Library source", "web_search": "Web search", "fetch_url": "Opening page", "browser": "Browser", "ask_user": "Question",

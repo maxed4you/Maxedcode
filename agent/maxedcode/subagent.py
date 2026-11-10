@@ -24,6 +24,7 @@ from .util import attach_late, cached_tokens, normalize_tool_output, repair_json
 from .tool_validation import (broken_text_call, canonical_tool_name, cut_off_error, sanitize_tool_history,
                               text_tool_calls, validate_tool_arguments, unknown_tool_error)
 from . import cachekey
+from .shelltool import NAME as SHELL_TOOL
 from . import cloud
 from . import llmretry
 
@@ -271,7 +272,7 @@ async def exec(name, a, allow_write=False, tool_specs=None, browser=None):
             if not allow_write and (WRITE_PY.search(a.get("code") or "") or permissions.dangerous_python(a.get("code") or "")):
                 return "subagent: writing or destructive Python is not allowed"
             return await runners.run_py(a["code"])
-        if name == "powershell":
+        if name == SHELL_TOOL:
             from .tools import ps_readonly
             if not allow_write and not ps_readonly(a.get("command") or ""):
                 return "subagent: only simple read-only shell commands are allowed"
@@ -548,7 +549,7 @@ async def run(prompt=None, agent=None, allow_write=False, force_readonly=False, 
         tool_specs = [t for t in BUILTIN if t["function"]["name"] in SUBAGENT_READONLY]
         if d and d["tools"] and not force_readonly:
             tool_specs = [t for t in BUILTIN if t["function"]["name"] in d["tools"]]
-        effective_write = False if force_readonly else (allow_write or bool(d and set(d["tools"]) & (SUBAGENT_WRITERS | {"py_run", "powershell"})))
+        effective_write = False if force_readonly else (allow_write or bool(d and set(d["tools"]) & (SUBAGENT_WRITERS | {"py_run", SHELL_TOOL})))
         active_model = model or ((d or {}).get("model") or MODEL)
         base_system = SUB_SYSTEM + (f"\n\n{d['body']}" if d and d.get("body") else "")
         cache_prefix = [{"role": "system", "content": base_system}]

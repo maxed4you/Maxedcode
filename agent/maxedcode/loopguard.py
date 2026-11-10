@@ -10,9 +10,11 @@ import json
 import os
 import re
 
+from .shelltool import NAME as SHELL_TOOL, POSIX
+
 CACHEABLE = {"read_file", "grep", "web_search", "fetch_url", "py_source"}   # pure reads
 MUTATING = {"edit_file", "write_file", "patch", "apply_diff"}
-RUN = {"powershell", "py_run"}
+RUN = {SHELL_TOOL, "py_run"}
 NEUTRAL = {"todo_write", "ask_user", "exit_plan_mode", "finish", "tool_search"}                      # never counted, never blocked
 NUDGE_AT = 3      # consecutive calls with nothing new -> tell the model to stop searching
 RUN_NUDGE_AT = 2   # failed execution retries should stop sooner
@@ -138,10 +140,14 @@ def _error_sig(out):
     for s in lines:
         if s.startswith(("Error: PowerShell command exited", "Error: Python process exited", "At ", "+ ", "[error origin]")):
             continue
+        if POSIX and s.startswith("Error: bash command exited"):
+            continue
         if s.startswith(("CategoryInfo", "FullyQualifiedErrorId")) or not _ERR_WORD.search(s):
             continue
         s = re.sub(r"^.*\.(?:ps1|psm1|py)\s+:\s+", "", s)        # "D:\x\run.ps1 : Cannot ..." -> "Cannot ..."
         s = re.sub(r"[A-Za-z]:[\\/][^'\"]*?(?=['\"\s,:]|$)", "<path>", s)
+        if POSIX:   # "/home/u/x.py: line 3: ..." -> "<path>: line N: ..."
+            s = re.sub(r"(?<![\w.~])~?/[^'\"\s,:]+", "<path>", s)
         return re.sub(r"\d+", "N", s)[:200].lower()
     return ""
 
@@ -184,7 +190,7 @@ def shape(name, a):
 def _may_change_state(name, a):
     if name == "py_run":
         return True
-    if name != "powershell":
+    if name != SHELL_TOOL:
         return False
     from .tools import ps_readonly
     return not ps_readonly(str(a.get("command") or ""))

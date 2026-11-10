@@ -8,6 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import os
+if os.name != "nt":   # Windows PowerShell suite; the bash tool is covered by test_posix_shell.py
+    raise unittest.SkipTest("Windows PowerShell suite")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maxedcode.tools import runners, shell  # noqa: E402

@@ -40,6 +40,7 @@ from ..tool_validation import (text_tool_calls, canonical_tool_name, normalize_t
                                 broken_text_call, BROKEN_CALL_FEEDBACK)
 from ..tools.mcp import MCP
 from ..tools.pysrc import tool_pysrc
+from ..shelltool import NAME as SHELL_TOOL
 from ..ui.screens import BtwScreen, CloudApprovalScreen, CloudSetupScreen, CommandPalette, EditorScreen, EffortScreen, HistoryScreen, LinkScreen, Pick
 from ..ui.widgets import Card, ChangeCard, Chat, Chrome, Prompt, SelStatic, TaskProgress, TodoPanel
 from ..ui.links import chat_md, open_url
@@ -1647,7 +1648,7 @@ class AgentApp(App):
             command = text[1:].strip()
             p.text = ""
             if not command:
-                await self.note("Shell mode: type ! followed by a PowerShell command. Esc clears it without running.", "grey50")
+                await self.note(f"Shell mode: type ! followed by a {TITLES.get(SHELL_TOOL, SHELL_TOOL)} command. Esc clears it without running.", "grey50")
                 return
             self.hist.append(text); self.hpos = len(self.hist)
             self.run_worker(self.run_shell_input(command, original=text), exclusive=True)
@@ -1807,13 +1808,13 @@ class AgentApp(App):
             await self.note(h["message"].strip() or "blocked by hook", "red")
             return
         try:
-            result = await self.run_call({"id": f"shell-{int(time.time() * 1000)}", "name": "powershell",
+            result = await self.run_call({"id": f"shell-{int(time.time() * 1000)}", "name": SHELL_TOOL,
                                           "args": json.dumps({"command": command}, ensure_ascii=False)})
         finally:
             self.set_busy(None)   # outside a model turn nobody resets the status: "Running: PowerShell…" would hang forever
         # The output is already in the command card: show it there in full, not as a second copy below
         with suppress(Exception):
-            next(w for w in reversed(self.chat.children) if isinstance(w, Card) and w.tool == "powershell").expand()
+            next(w for w in reversed(self.chat.children) if isinstance(w, Card) and w.tool == SHELL_TOOL).expand()
         # Shell mode is a user-initiated command, not an assistant tool call; keep a valid transcript.
         self.msgs.append({"role": "user", "content": f"<direct_shell command=\"{command}\">\n<output>\n{result}\n</output>\n</direct_shell>"})
         self.save_session()
@@ -2052,7 +2053,7 @@ class AgentApp(App):
                 await self.note(f"/redo re-applied {len(files)} file(s):\n" + "\n".join(files), "cyan")
         elif cmd in ("/allow", "/deny"):
             if not arg.strip():
-                await self.note("Usage: /allow powershell(git *) or /allow py_run", "yellow")
+                await self.note(f"Usage: /allow {SHELL_TOOL}(git *) or /allow py_run", "yellow")
             else:
                 permissions.add(cmd[1:], arg.strip())
                 await self.note(f"{cmd[1:]} {arg.strip()} saved to {PERMS_FILE}", "cyan")
@@ -2060,7 +2061,7 @@ class AgentApp(App):
             r = permissions.load()
             rules = [("allow", x) for x in r["allow"]] + [("deny", x) for x in r.get("deny", [])] + [("ask", x) for x in r.get("ask", [])]
             if not rules:
-                await self.note("No permission rules. Add: /allow powershell(git *) — then it will not ask again", "grey70")
+                await self.note(f"No permission rules. Add: /allow {SHELL_TOOL}(git *) — then it will not ask again", "grey70")
             else:
                 await self.note(permissions_text(rules, PERMS_FILE))
         elif cmd == "/compact":
@@ -3622,7 +3623,7 @@ class AgentApp(App):
             return None
         if name in EDIT_TOOLS:
             return "Error: plan mode — editing is forbidden. Give the plan and stop, then /run to implement."
-        if name == "powershell" and WRITE_PS.search(a.get("command") or ""):
+        if name == SHELL_TOOL and WRITE_PS.search(a.get("command") or ""):
             return "Error: plan mode — this command changes the disk. Put it in the plan, do not run it."
         if name == "py_run" and permissions.dangerous_python(a.get("code") or ""):
             return "Error: plan mode — this code may change files or execute a destructive command. Put it in the plan, do not run it."
@@ -3647,7 +3648,7 @@ class AgentApp(App):
             return False
         if name in ("ask_user", "read_file", "grep", "web_search", "fetch_url", "py_source", "subagent", "bg_output", "bg_kill", "todo_write", "finish", "tool_search"):
             return False
-        if name == "powershell" and ps_readonly(a.get("command") or ""):
+        if name == SHELL_TOOL and ps_readonly(a.get("command") or ""):
             return False
         if name == "browser" and a.get("action") in browser_tool.READ_ACTIONS and not a.get("task"):
             return False   # looking at a page changes nothing
@@ -3800,7 +3801,7 @@ class AgentApp(App):
                     await self.put(ChangeCard(name, kind, path, old, new))
                 if len(changes) > 20:
                     await self.note(f"… {len(changes) - 20} more files changed", "grey50")
-                if name in ("powershell", "py_run") and isinstance(out, str):
+                if name in (SHELL_TOOL, "py_run") and isinstance(out, str):
                     out += scratch_note(changes, os.getcwd(), self._turn_request)
                 # Kept on the calling answer so /history shows the same cards; wire() never sends it.
                 owner = next((x for x in reversed(self.msgs) if x.get("role") == "assistant"
@@ -3813,7 +3814,7 @@ class AgentApp(App):
                     out = notice + "\n" + str(out)
             # Subagents are enforced read-only; treating one as a mutation caused an unnecessary
             # repo-map rebuild and strict checklist nudge after every delegated investigation.
-            if name in EDIT_TOOLS or name == "py_run" or (name == "powershell" and not ps_readonly(a.get("command") or "")):
+            if name in EDIT_TOOLS or name == "py_run" or (name == SHELL_TOOL and not ps_readonly(a.get("command") or "")):
                 self._repo_map_revision += 1
                 self._repo_map_dirty = True
             ok = not out.startswith(("Error", "Tool error"))
@@ -3832,7 +3833,7 @@ class AgentApp(App):
                 if owner is not None:
                     owner.setdefault("edit_changes", {})[c["id"]] = [before, after]
             if ok and (name in EDIT_TOOLS or name == "py_run"
-                       or (name == "powershell" and not ps_readonly(a.get("command") or ""))):
+                       or (name == SHELL_TOOL and not ps_readonly(a.get("command") or ""))):
                 self._turn_had_mutating_or_exec = True
             out += self.loopguard.after(name, a, out, ok)
             self.task_progress_guard.observe_tool(name, a, ok)
@@ -3895,7 +3896,7 @@ class AgentApp(App):
                 return arg_error
             if name == "todo_write":
                 return tool_todo(a.get("todos"))
-            if name == "powershell":
+            if name == SHELL_TOOL:
                 if a.get("run_in_background"):
                     result = runners.bg_start(a["command"])
                     match = re.search(r"Background id (\d+): started", result)

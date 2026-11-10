@@ -7,6 +7,8 @@ import re
 
 from .schemas import BUILTIN, READONLY, PARALLEL_READS, EDIT_TOOLS
 from ..tool import ToolRegistry
+from .. import shelltool
+from ..shelltool import NAME as SHELL_TOOL
 
 # One immutable metadata view, built in stable name order. Runtime dispatch remains explicit.
 _REGISTRY = ToolRegistry(BUILTIN, parallel_names=PARALLEL_READS, read_names=READONLY,
@@ -14,7 +16,7 @@ _REGISTRY = ToolRegistry(BUILTIN, parallel_names=PARALLEL_READS, read_names=READ
 
 
 # plan mode: powershell/py_run are allowed only if they do not touch the disk
-WRITE_PS = re.compile(r"(?i)(?:(?<![=\-])>>?(?!&)(?!\s*(?:\$null|nul\b))|\bOut-File\b|\bSet-Content\b|\bAdd-Content\b|\bRemove-Item\b|\bNew-Item\b|\bMove-Item\b|\bCopy-Item\b|\bClear-Content\b|\brm\b|\bdel\b|\bdelitem\b|\binstall\b|\bgit\b\s+(commit|push|pull|checkout|reset|clean|merge|stash)|\btaskkill\b|\breboot\b)")
+WRITE_PS_WIN = WRITE_PS = re.compile(r"(?i)(?:(?<![=\-])>>?(?!&)(?!\s*(?:\$null|nul\b))|\bOut-File\b|\bSet-Content\b|\bAdd-Content\b|\bRemove-Item\b|\bNew-Item\b|\bMove-Item\b|\bCopy-Item\b|\bClear-Content\b|\brm\b|\bdel\b|\bdelitem\b|\binstall\b|\bgit\b\s+(commit|push|pull|checkout|reset|clean|merge|stash)|\btaskkill\b|\breboot\b)")
 WRITE_PY = re.compile(r"(?i)(?:write_text|write_bytes|\.unlink\(|\.rename\(|\bshutil\b|\bos\.(remove|replace|rename|mkdir|unlink|system)|\.touch\(|open\([^)]*\b[2wa]\+?['\"]|\bsubprocess\b|\bpip install\b|>>)")
 # read-only shell commands: no confirmation needed, the agent runs them right away
 PS_RO = r"(?:Get-ChildItem|ls|dir|cat|type|Get-Content|Select-String|grep|rg|head|tail|test|pwd|which|where|whoami|echo|Get-Command|git\s+(?:status|log|diff|show|blame|remote\s+geturl))"
@@ -27,7 +29,31 @@ def ps_readonly(cmd):
     # redirect output, or evaluate a subexpression. Treat shell syntax as not parallel-safe.
     if any(ch in source for ch in ("|", ";", "&", ">", "<", "$", "`", "\n", "\r", "(", ")", "{" , "}")):
         return False
+    if shelltool.POSIX:
+        return sh_readonly(source)
     return bool(re.match(PS_RO, source) and not WRITE_PS.search(source))
+
+
+# Linux/macOS (the bash tool): the same two checks for POSIX commands. `2>/dev/null` is not a write;
+# find with -delete/-exec, sed -i and git commands that move refs are.
+WRITE_SH = re.compile(
+    r"(?i)(?:(?<![=\-])>>?(?!&)(?!\s*/dev/(?:null|stdout|stderr)\b)|\brm\b|\brmdir\b|\bmv\b|\bcp\b|\bmkdir\b"
+    r"|\btouch\b|\bln\b|\bchmod\b|\bchown\b|\bchgrp\b|\btruncate\b|\bshred\b|\bunlink\b|\btee\b|\bdd\b"
+    r"|\b(?:sed|perl)\b[^|;&\n]*\s-i|-delete\b|-exec(?:dir)?\b|-ok(?:dir)?\b|-fprint\w*|-fls\b|\binstall\b"
+    r"|\bgit\b\s+(?:commit|push|pull|checkout|reset|clean|merge|stash|switch|restore|rebase|apply|am|tag|branch\s+-\w*[dDmM])"
+    r"|\b(?:kill|killall|pkill|reboot|shutdown|halt|poweroff|sudo|doas|crontab|systemctl|launchctl|mkfs\w*)\b)")
+SH_RO = (r"(?:ls|cat|head|tail|grep|egrep|fgrep|rg|wc|file|stat|find|du|df|pwd|which|type|whoami|id|uname|echo|printf"
+         r"|realpath|readlink|basename|dirname|printenv|test|git\s+(?:status|log|diff|show|blame|rev-parse|remote\s+(?:-v|get-url)))(?=\s|$)")
+if shelltool.POSIX:
+    WRITE_PS = WRITE_SH
+
+
+def sh_readonly(cmd):
+    """ps_readonly() for bash: a single plain read command, no pipes, redirects or substitutions."""
+    source = (cmd or "").strip()
+    if not source or any(ch in source for ch in ("|", ";", "&", ">", "<", "$", "`", "\n", "\r", "(", ")", "{", "}")):
+        return False
+    return bool(re.match(SH_RO, source) and not WRITE_SH.search(source))
 
 def parallel_safe(name, args):
     """Whether a tool call is safe to run concurrently with another model-issued call."""
@@ -35,14 +61,16 @@ def parallel_safe(name, args):
     metadata = _REGISTRY.get(name)
     if metadata is not None and metadata.parallel:
         return True
-    # A narrowly recognized read-only PowerShell command is okay; arbitrary shell/Python is not.
-    return name == "powershell" and ps_readonly(args.get("command") or "")
+    # A narrowly recognized read-only shell command is okay; arbitrary shell/Python is not.
+    return name == SHELL_TOOL and ps_readonly(args.get("command") or "")
 
 
 # A file named in the request ("calc.py", ".env", "C:\work"): a structural hint, the same in every language.
 _NAMED_FILE_HINT = re.compile(r"(?i)\b[\w./\\-]+\.(?:py|pyi|js|jsx|ts|tsx|json|jsonl|ya?ml|toml|ini|cfg|md|txt|csv|tsv|log|env|bat|ps1|sh|html|css)\b")
 _DOTFILE_HINT = re.compile(r"(?i)(?:^|[\s`\"'])\.[\w-]+")
 _DRIVE_PATH_HINT = re.compile(r"[A-Za-z]:[\\/]")
+# Linux/macOS: "/home/u/work", "~/proj/x" name the target like "C:\work" does.
+_POSIX_PATH_HINT = re.compile(r"(?:^|[\s`\"'(])~?/[\w.-]+/[\w./-]*")
 
 
 def _request_text(prompt):
@@ -87,4 +115,5 @@ def prompt_needs_repo_map(prompt):
     text = _request_text(prompt)
     if not text:
         return False
-    return not (_NAMED_FILE_HINT.search(text) or _DOTFILE_HINT.search(text) or _DRIVE_PATH_HINT.search(text))
+    return not (_NAMED_FILE_HINT.search(text) or _DOTFILE_HINT.search(text) or _DRIVE_PATH_HINT.search(text)
+                or (shelltool.POSIX and _POSIX_PATH_HINT.search(text)))

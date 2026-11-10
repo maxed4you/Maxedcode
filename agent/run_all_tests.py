@@ -32,6 +32,7 @@ SUITES = [
     ("Persistent PowerShell timeout/retry and headless regression tests", "test_shell_runner.py"),
     ("Long commands: per-call timeout, background wait, no orphan children", "test_background_wait.py"),
     ("PowerShell pre-check: multi-line, unknown cmdlets/parameters, auto-fixes", "test_ps_precheck.py"),
+    ("Linux/macOS bash tool: schema, prompt, safety checks, persistent bash; Windows prefix unchanged", "test_posix_shell.py"),
     ("Local-model quality: repo map, edit fallback, lint/cache, hooks, model profiles", "test_local_quality.py"),
     ("Runtime speed fixes: bounded reasoning, language-free tool routing", "test_runtime_fixes.py"),
     ("Prompt-cache stability: prefix order, byte-identical arguments, compaction anchor", "test_cache_stability.py"),

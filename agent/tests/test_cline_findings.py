@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from maxedcode import compact, config, memory, tool_validation
 from maxedcode.tools import fs, mcp, undo
+from maxedcode.shelltool import NAME as SHELL  # noqa: E402  (powershell on Windows, bash on Linux/macOS)
 
 ENV_OLD = "<env>\nOS: Windows\nToday: 2026-11-01, Sunday\n</env>"
 ENV_NEW = "<env>\nOS: Windows\nToday: 2026-11-02, Monday\n</env>"
@@ -127,7 +128,7 @@ class CutAndCompactTests(unittest.TestCase):
     def test_basic_summary_needs_no_model(self):
         msgs = [{"role": "user", "content": "fix the bug"},
                 {"role": "assistant", "content": "Found it in parse()", "tool_calls": [
-                    {"function": {"name": "powershell", "arguments": json.dumps({"command": "pytest -q"})}}]}]
+                    {"function": {"name": SHELL, "arguments": json.dumps({"command": "pytest -q"})}}]}]
         text = compact.basic_summary(msgs)
         self.assertTrue(compact.filled(text))
         self.assertIn("pytest -q", text)

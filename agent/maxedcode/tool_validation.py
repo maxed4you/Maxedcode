@@ -14,6 +14,7 @@ import re
 import ntpath
 from typing import Any
 
+from .shelltool import NAME as SHELL_TOOL, POSIX
 from .util import repair_json
 
 
@@ -24,7 +25,7 @@ def _name_key(name: str) -> str:
 # Keys are _name_key() forms. Only aliases whose arguments match the target's (command, path, pattern).
 _NAME_ALIASES = {
     **dict.fromkeys(("runcommand", "executecommand", "shell", "bash", "terminal", "runshell", "cmd",
-                     "runterminalcmd", "exec"), "powershell"),
+                     "runterminalcmd", "exec") + (("powershell", "pwsh", "sh", "zsh") if POSIX else ()), SHELL_TOOL),
     **dict.fromkeys(("read", "readfiles", "view", "cat", "openfile"), "read_file"),
     **dict.fromkeys(("search", "searchfiles", "grepsearch", "ripgrep", "rg"), "grep"),
     **dict.fromkeys(("runpython", "python", "pythonexec", "executepython"), "py_run"),
@@ -688,7 +689,7 @@ def _clean_question(args: dict[str, Any]) -> None:
 # Tools whose half-sent text would act: repair_json closes an unterminated string, so a reply cut by the
 # output limit wrote half a file (real session: a 10.7k-char write_file ended mid-row of a CSV) or would run
 # half a command.
-CUT_TOOLS = frozenset({"write_file", "edit_file", "patch", "apply_diff", "powershell", "py_run"})
+CUT_TOOLS = frozenset({"write_file", "edit_file", "patch", "apply_diff", SHELL_TOOL, "py_run"})
 
 
 def _ends_inside_string(s: str) -> bool:

@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 from maxedcode.tool_validation import (
@@ -14,6 +15,7 @@ class ArgumentSemanticsTests(unittest.TestCase):
         self.assertIn("end_line 5 is before start_line 20", error)
         self.assertIn("No changes were made", error)
 
+    @unittest.skipUnless(os.name == "nt", "the powershell tool exists only on Windows")
     def test_one_letter_typo_runs_the_only_close_tool(self):
         from maxedcode.tool_validation import canonical_tool_name
         for typo, name in (("powersell", "powershell"), ("ppowershell", "powershell"), ("wirte_file", "write_file")):
