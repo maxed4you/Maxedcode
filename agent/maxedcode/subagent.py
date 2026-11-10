@@ -10,7 +10,7 @@ import weakref
 from pathlib import Path
 from copy import deepcopy
 from openai import AsyncOpenAI
-from .config import API_KEY, BASE_URL, MODEL, SUBAGENT_MAX_CONCURRENT, SYSTEM, CTX_WINDOW, sampling_for, top_k_for, min_p_for
+from .config import API_KEY, BASE_URL, SUBAGENT_MAX_CONCURRENT, SYSTEM, CTX_WINDOW, sampling_for, top_k_for, min_p_for
 from . import compact, config, hooks, permissions, skills, state
 from .tools import READONLY, WRITE_PY, WRITE_PS, BUILTIN, parallel_safe
 from .tools import runners, web
@@ -509,7 +509,8 @@ async def run(prompt=None, agent=None, allow_write=False, force_readonly=False, 
             return "Error: shared-prefix subagents require parent_sid and the exact parent tools list."
         # A parent-backed subagent must use exactly the same model and schema catalog as the parent.
         tool_specs = deepcopy(tools)
-        active_model = model or MODEL
+        # config.MODEL at call time: resolve_server / follow_loaded may have switched it to the loaded model
+        active_model = model or config.MODEL
         head = len(cache_prefix)
         report_limit = _report_limit(report_chars)
         extra_instructions = ("\nAdditional task instructions: " + d["body"].strip()) if d and d.get("body", "").strip() else ""
@@ -550,7 +551,7 @@ async def run(prompt=None, agent=None, allow_write=False, force_readonly=False, 
         if d and d["tools"] and not force_readonly:
             tool_specs = [t for t in BUILTIN if t["function"]["name"] in d["tools"]]
         effective_write = False if force_readonly else (allow_write or bool(d and set(d["tools"]) & (SUBAGENT_WRITERS | {"py_run", SHELL_TOOL})))
-        active_model = model or ((d or {}).get("model") or MODEL)
+        active_model = model or ((d or {}).get("model") or config.MODEL)
         base_system = SUB_SYSTEM + (f"\n\n{d['body']}" if d and d.get("body") else "")
         cache_prefix = [{"role": "system", "content": base_system}]
         prefix_for_budget = cache_prefix

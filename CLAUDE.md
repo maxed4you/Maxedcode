@@ -165,6 +165,9 @@ agent/
    │                     the agent picks the model: cloud_code action=list / note (notes "what it is good for" after web_search)
    ├─ servers.py         which model servers are installed/running (Strata from source, LM Studio, Ollama, llama.cpp, Jan,
    │                     vLLM…), their real context and loaded model, cache fields for each (cache_fields); stdlib only.
+   │                     LM Studio / Ollama load any model a request names: every request (main turn, subagents, ultra,
+   │                     summaries, --btw) names the loaded one (pick_model; config.follow_loaded before each TUI turn),
+   │                     with its loaded window; the configured one only when it is loaded or nothing is
    │                     CLOUD — clouds for the main model (OpenAI, Claude, Gemini, DeepSeek, Groq, Mistral, xAI,
    │                     OpenRouter, Together, Cerebras; all via their OpenAI-compatible endpoint, no separate protocol needed):
    │                     the installer ("Cloud API" line), /server, the app window (Settings → maxedcode: provider + API key).

@@ -291,6 +291,61 @@ def loaded_model(base, key="", kind="", timeout=3):
     return None
 
 
+# Servers that load whatever listed model a request names: LM Studio (JIT loading) loads a second model, often
+# with its default 4096 window, or evicts the one the user loaded; Ollama the same. A request there must name
+# a model that is loaded.
+JIT_KINDS = {"lmstudio", "ollama"}
+
+
+def loaded_models(base, key="", kind="", timeout=3):
+    """[(id, loaded window or None)] of what LM Studio / Ollama have loaded now; [] = nothing loaded,
+    None = the server does not say (another kind, or no answer)."""
+    if kind == "lmstudio":
+        d = get(root(base) + "/api/v0/models", key, timeout)
+        if not isinstance(d, dict) or not isinstance(d.get("data"), list):
+            return None
+        return [(str(m["id"]), m.get("loaded_context_length")) for m in d["data"]
+                if isinstance(m, dict) and m.get("id") and m.get("state") == "loaded"
+                and m.get("type") in (None, "llm", "vlm")]
+    if kind == "ollama":
+        d = get(root(base) + "/api/ps", key, timeout)
+        if not isinstance(d, dict):
+            return None
+        return [(str(m.get("model") or m.get("name")), m.get("context_length")) for m in (d.get("models") or [])
+                if isinstance(m, dict) and (m.get("model") or m.get("name"))]
+    return None
+
+
+def same_model(a, b):
+    """One model id however it is spelled: case aside, Ollama's default ":latest" tag implied."""
+    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
+    return bool(a) and (a == b or a + ":latest" == b or a == b + ":latest")
+
+
+def pick_model(want, on, kind=""):
+    """The model a request names on a server that loads any model it is asked for (JIT_KINDS).
+
+    want: the configured id or None; on: loaded_models(). -> (model or None, its loaded window or None, note).
+    The configured model when it is loaded; otherwise the loaded one (the user loaded it there on purpose:
+    naming another id made LM Studio load a second model or evict this one); several loaded: the configured
+    one among them, else the first. Nothing loaded: the configured model, never one the server picks itself."""
+    if on is None:
+        return want, None, ""
+    label = LABELS.get(kind) or "the server"
+    hit = next((m for m in on if same_model(want, m[0])), None) if want else None
+    if hit:
+        return hit[0], hit[1], ""
+    if on:
+        name = on[0][0]
+        if want:
+            return name, on[0][1], f"{label} has {name} loaded, not {want} from the settings: using {name}"
+        return name, on[0][1], f"{label} has {len(on)} models loaded: using {name}" if len(on) > 1 else ""
+    if want:
+        return want, None, (f"{label} has no model loaded: the first request loads {want} "
+                            f"(load it in {label} yourself to choose its context)")
+    return None, None, f"{label} has no model loaded: load one in {label}"
+
+
 def context(base, key="", kind="", model=None, timeout=3, health=None, props=None):
     """The context window the server really allocated (per request slot), or None when it does not say."""
     r = root(base)
@@ -345,23 +400,38 @@ def context(base, key="", kind="", model=None, timeout=3, health=None, props=Non
 def describe(base, key="", kind="", model=None, timeout=3):
     """Everything a run needs to know, in as few requests as each server allows.
 
-    -> {"kind", "ctx", "model" (loaded, or None), "props" (llama.cpp /props or None), "online"}"""
+    -> {"kind", "ctx", "model" (loaded, or None), "props" (llama.cpp /props or None), "online",
+        "use" (the model requests name: pick_model on LM Studio / Ollama, else the given one),
+        "loaded_ctx" (the window of that model as loaded, or None), "note" (say it to the user, or "")}"""
     r = root(base)
     cloud = kind in CLOUD_KINDS or bool(cloud_kind(base))
+    off = {"kind": kind, "ctx": None, "model": None, "props": None, "online": False, "use": model,
+           "loaded_ctx": None, "note": ""}
     if not cloud and port_down(base):       # nothing listens: no 7 slow refused connects (see port_down)
-        return {"kind": kind, "ctx": None, "model": None, "props": None, "online": False}
+        return off
     health = None if cloud else get(r + "/health", key, timeout)
     if not kind:
         kind = kind_of(base, key, min(timeout, 2), health)
         cloud = kind in CLOUD_KINDS
     props = get(r + "/props", key, timeout) if kind in ("strata", "llamacpp", "") else None
-    loaded = None if cloud else loaded_model(base, key, kind, timeout)
-    ctx = context(base, key, kind, model or loaded, timeout, health, props)
-    online = health is not None or props is not None or loaded is not None or ctx is not None
+    on = loaded_models(base, key, kind, timeout) if kind in JIT_KINDS else None
+    use, loaded_ctx, note = pick_model(model, on, kind)
+    if on is not None:
+        loaded = on[0][0] if len(on) == 1 else None
+        if not on and not model:        # nothing loaded or chosen: the only downloaded model is no random pick
+            with suppress(Exception):
+                ids = model_ids(base, key, timeout) or []
+                if len(ids) == 1:
+                    use, note = pick_model(ids[0], [], kind)[0::2]
+    else:
+        loaded = None if cloud else loaded_model(base, key, kind, timeout)
+    ctx = loaded_ctx or context(base, key, kind, use or loaded, timeout, health, props)
+    online = health is not None or props is not None or on is not None or loaded is not None or ctx is not None
     if cloud and not online:            # most cloud model lists carry no context size: a list is an answer
         with suppress(Exception):
             online = model_ids(base, key, timeout) is not None
-    return {"kind": kind, "ctx": ctx, "model": loaded, "props": props, "online": online}
+    return {"kind": kind, "ctx": ctx, "model": loaded, "props": props, "online": online, "use": use,
+            "loaded_ctx": loaded_ctx, "note": note}
 
 
 def cache_fields(kind):

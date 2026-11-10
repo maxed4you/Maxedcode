@@ -309,6 +309,20 @@ def notice(kind, text):
         out({"type": "notice", "kind": kind, "text": text})
 
 
+def model_notice(note):
+    """Which model the server has loaded, when it is not the configured one (servers.pick_model): said once per
+    change, not on every turn of the window (each turn is a run of its own)."""
+    seen = config.HOME / "model_note.txt"
+    with suppress(OSError):
+        if seen.read_text(encoding="utf-8") == note:
+            return
+    with suppress(OSError):
+        seen.parent.mkdir(parents=True, exist_ok=True)
+        seen.write_text(note, encoding="utf-8")
+    if note:
+        notice("model", note)
+
+
 def emit_event(name, **fields):
     """Emit a normalized event; legacy stream-json aliases remain emitted separately."""
     event = EVENTS.emit(name, **fields)
@@ -822,12 +836,15 @@ async def _run_impl(prompt, as_json=False, sid=None):
     state.S["effort"] = EFFORT          # subagents read it: their prefix must match this run's
     global MODEL
     if not os.environ.get("AGENT_CTX"):
-        await asyncio.to_thread(config.resolve_server)   # real window, model id (model_settings), reasoning support
-        MODEL = config.MODEL
+        # real window, model id (model_settings; on LM Studio / Ollama the loaded one), reasoning support
+        server = await asyncio.to_thread(config.resolve_server)
     else:
         await asyncio.to_thread(config.resolve_keep_reasoning)
+        server = await asyncio.to_thread(config.follow_loaded)    # never a second model loaded on LM Studio / Ollama
+    MODEL = config.MODEL
     global EVENTS, EVENT_METRICS, RUN_STARTED
     FORMAT = f["format"] or ("json" if as_json else "text")
+    model_notice(server.get("note") or "")
     ALLOWED = f["allowed"]
     ASSUME, YES = f["assume"], f["yes"]
     GUARD.reset()

@@ -63,6 +63,7 @@ SUITES = [
     ("Desktop window: webapp, --session, live deltas, tool result ids, --btw, Plan/Auto, settings", "test_desktop_engine.py"),
     ("Own browser: extension id, native host, browser tool and its helper", "test_browser.py"),
     ("macOS / Linux: clipboard, keys, servers, browser host, app window, terminal", "test_posix_platform.py"),
+    ("LM Studio / Ollama: the loaded model and its window, never a second model loaded", "test_loaded_model.py"),
 ]
 TIMES = Path(tempfile.gettempdir()) / "maxedcode-test-times.json"   # the last run's seconds per suite
 

@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 from . import servers
 from .shelltool import POSIX
@@ -459,23 +460,62 @@ def resolve_server():
     Without the id the model is "local": no model_settings profile matches, and LM Studio / Ollama (which list
     every downloaded model) refuse it or load another one. Without the window the agent compacts too late and
     the server cuts the prompt itself (Ollama silently, from the front), so the cache breaks on every request."""
-    global CTX_WINDOW, CTX_SRC, MODEL, SERVER_KIND
-    info = servers.describe(BASE_URL, API_KEY, SERVER_KIND, MODEL if MODEL_SET else None)
+    global SERVER_KIND
+    info = servers.describe(BASE_URL, API_KEY, SERVER_KIND, _want())
     SERVER_KIND = info["kind"]
-    if CTX_SRC == "default" and info["ctx"]:
-        CTX_WINDOW, CTX_SRC = info["ctx"], f"server ({servers.LABELS.get(SERVER_KIND) or 'reported'})"
-    if not MODEL_SET and info["model"]:
-        MODEL = str(info["model"])
+    _adopt(info.get("use") or (None if MODEL_SET else info["model"]), info["ctx"], info.get("loaded_ctx"))
     if info["online"]:                  # an off server is not asked /props once more (2 s refused connect)
         resolve_keep_reasoning(info["props"])
     return {"ctx": CTX_WINDOW, "model": MODEL, "keep_reasoning": KEEP_REASONING, "kind": SERVER_KIND,
-            "online": info["online"]}
+            "online": info["online"], "note": info.get("note") or ""}
+
+
+CHOSEN = ""     # the configured model while the one loaded on the server is used instead (servers.pick_model)
+
+
+def _want():
+    """The model the user chose (--model, env, settings.json, config.json), or None: the server's own."""
+    return (CHOSEN or MODEL) if MODEL_SET else None
+
+
+def _adopt(model, ctx, loaded_ctx):
+    """Use what the server reported: the model requests name, its window (unless the user set one; a set
+    window larger than the loaded model has would overflow it, so the loaded one wins then)."""
+    global MODEL, CHOSEN, CTX_WINDOW, CTX_SRC
+    if model and str(model) != MODEL:
+        if MODEL_SET and not CHOSEN:
+            CHOSEN = MODEL
+        MODEL = str(model)
+    label = servers.LABELS.get(SERVER_KIND) or "reported"
+    if ctx and (CTX_SRC == "default" or CTX_SRC.startswith("server")):
+        CTX_WINDOW, CTX_SRC = int(ctx), f"server ({label})"
+    elif loaded_ctx and int(loaded_ctx) < CTX_WINDOW:
+        CTX_WINDOW, CTX_SRC = int(loaded_ctx), f"server ({label}, as loaded)"
+
+
+def follow_loaded(timeout=1.5):
+    """LM Studio / Ollama: the model loaded there now, in one request (the user may switch it between turns).
+
+    The TUI asks before each turn, headless with AGENT_CTX set (resolve_server is skipped then). Other servers
+    and a server that is off cost nothing / 0.5 s (port_down). -> {"model", "ctx", "note"}"""
+    global SERVER_KIND
+    kind = SERVER_KIND or {1234: "lmstudio", 11434: "ollama"}.get(urllib.parse.urlsplit(BASE_URL).port, "")
+    if kind not in servers.JIT_KINDS or servers.port_down(BASE_URL):
+        return {"model": MODEL, "ctx": CTX_WINDOW, "note": ""}
+    on = servers.loaded_models(BASE_URL, API_KEY, kind, timeout)
+    model, loaded_ctx, note = servers.pick_model(_want(), on, kind)
+    if on is not None:
+        SERVER_KIND = kind
+        _adopt(model, loaded_ctx, loaded_ctx)
+    return {"model": MODEL, "ctx": CTX_WINDOW, "note": note}
+
+
 def use_server(base, kind="", model=None):
     """Switch this process to another model server (CLI /server, the window's picker); the caller saves it.
 
     The window, the model and the server kind are found again; a context from the environment or settings.json
     stays. -> resolve_server()'s answer."""
-    global BASE_URL, SERVER_KIND, MODEL, MODEL_SET, CTX_SRC
+    global BASE_URL, SERVER_KIND, MODEL, MODEL_SET, CTX_SRC, CHOSEN
     base = str(base).strip().rstrip("/")
     if not re.match(r"^https?://", base, re.I):
         base = "http://" + base
@@ -484,6 +524,7 @@ def use_server(base, kind="", model=None):
     BASE_URL = re.sub(r"^(\w+://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", base, flags=re.I)
     SERVER_KIND = str(kind or "").lower()
     MODEL, MODEL_SET = (str(model), True) if model else ("local", False)
+    CHOSEN = ""
     if CTX_SRC not in ("AGENT_CTX env", "settings.json"):
         CTX_SRC = "default"
     return resolve_server()

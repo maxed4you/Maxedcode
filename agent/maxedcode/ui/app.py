@@ -576,14 +576,20 @@ class AgentApp(App):
         os.environ.setdefault("FORCE_COLOR", "3")
         # one look at the server (any kind): its window, its loaded model id, reasoning support. No server
         # (or a test without one): nothing else to ask
+        info = {}
         with suppress(Exception):
             info = await asyncio.to_thread(config.resolve_server)
-            if info.get("online") and not os.environ.get("AGENT_CTX"):
+            if info.get("online"):      # AGENT_CTX stays, unless the loaded model has less (config._adopt)
                 CTX_WINDOW, CTX_SRC = config.CTX_WINDOW, config.CTX_SRC
-            if S["model"] == "local" and config.MODEL != "local":
-                S["model"] = config.MODEL     # the server's id: model_settings profiles match it, "local" matched none
+            if config.MODEL != "local":
+                # the server's id: model_settings profiles match it, "local" matched none; on LM Studio /
+                # Ollama the loaded model, so a request never makes the server load a second one
+                S["model"] = config.MODEL
+        self._model_note = info.get("note") or ""
         self._hydrate_child_sessions(self.sid)
         await self.banner()
+        if self._model_note:
+            await self.note(self._model_note, "grey50")
         self.update_notes()
         await self.refresh_session_tabs(force=True)
         h = await hooks.run("SessionStart", {"session_id": self.sid, "cwd": os.getcwd(), "event": "SessionStart",
@@ -2718,6 +2724,9 @@ class AgentApp(App):
         label = servers.LABELS.get(config.SERVER_KIND) or "server"
         await self.note(f"server: {label} {config.BASE_URL} · model {S['model']} · context {CTX_WINDOW:,} "
                         "(a new server reads the prompt from scratch once)", "green")
+        self._model_note = info.get("note") or ""
+        if self._model_note:
+            await self.note(self._model_note, "grey50")
 
     async def mcp_cmd(self, arg):
         try:
@@ -2896,6 +2905,21 @@ class AgentApp(App):
             ultra.attach(message, report)
         self.set_busy("Thinking…")
 
+    async def follow_loaded_model(self):
+        """LM Studio / Ollama: name the model loaded there now (the user may have switched it between turns),
+        so a request never makes the server load another one. One local request; nothing on other servers."""
+        global CTX_WINDOW, CTX_SRC
+        if S["model"] != config.MODEL:      # /model or a command's own model: the user's explicit choice
+            return
+        with suppress(Exception):
+            info = await asyncio.to_thread(config.follow_loaded)
+            S["model"] = config.MODEL
+            CTX_WINDOW, CTX_SRC = config.CTX_WINDOW, config.CTX_SRC
+            note = info.get("note") or ""
+            if note and note != getattr(self, "_model_note", ""):
+                await self.note(note, "grey50")
+            self._model_note = note
+
     async def turn(self, text, shown=None, retract=None):
         """retract — the user's original text: Esc before the model answers returns it to the input."""
         # what earlier turns read from the queues can't be returned; our own (from self.queue) goes with the turn
@@ -2937,6 +2961,7 @@ class AgentApp(App):
         if self.progress_w:
             self.progress_w.reset()
         self.set_busy("Thinking…")
+        await self.follow_loaded_model()
         self._btw_ready = False   # a /btw asked now starts after the first step: the last request is stale
         try:
             note = f"<mode_notice>Mode switched to {S['mode']}.</mode_notice>\n" if S["last_mode"] not in (None, S["mode"]) else ""
