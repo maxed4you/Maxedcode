@@ -60,6 +60,26 @@ dangerous commands), `--session <id>` (continue or start the session with this i
 `reset` — an attempt was retried), `tool_result` (with the call `id` and `ms`) and `result`
 (with `model_ms`, `model_calls`, `tool_ms`, `tool_calls`, counters/time per tool).
 
+**Linux / macOS install** (all gated by `install.WINDOWS` / `MACOS`; the Windows path is unchanged):
+`curl -fsSL .../install.sh | sh` (repo root) or the same npm package (`bin/maxedcode.js` detects the OS; `package.json`
+`os`: win32, linux, darwin). Both start with `installer/bootstrap.sh` (twin of bootstrap.ps1, path via `MX_PYFILE`): a
+Python 3.10+ whose `venv` + ensurepip really work, else uv (official standalone installer into `~/.maxedcode/uv`,
+`UV_NO_MODIFY_PATH=1`) and its Python 3.12; manual instructions only if that fails too — no sudo anywhere. Default
+folder `$XDG_DATA_HOME/maxedcode` (`~/.local/share/maxedcode`), asked by the wizard (Tk window, else the console wizard
+with arrow keys via termios; `install.sh` asks when it has a terminal, `MAXEDCODE_YES=1` = defaults). Layout:
+`<dir>/README.txt` + `<dir>/program` with its own venv `program/.venv` (PEP 668; `python -m venv` with the setup Python,
+fallback `uv venv --seed --python 3.12`; `uv pip` is used when uv is there), `program/bin/maxed` (sh, 755, LF:
+`maxed app` → `--app`, `configure`, `shortcuts`, `uninstall`, everything else → local_agent.py), the link
+`~/.local/bin/maxed` (a wrapper when no symlink can be made; another program's `maxed` is left alone) and, when
+`~/.local/bin` is not in PATH, a marked `export PATH=...` line in the shell's start file (`$SHELL`: ~/.bashrc,
+~/.zshrc, ~/.bash_profile on macOS, fish) that uninstall takes out. Shortcuts: Linux `~/.local/share/applications/
+maxedcode.desktop` (app) + `maxedcode-cli.desktop` (Terminal=true), icon in `icons/hicolor/256x256/apps`; macOS
+`~/Applications/maxedcode.app` (Info.plist, `Contents/MacOS/maxedcode` = `exec program/bin/maxed app`, icns by
+sips + iconutil when present). The app on POSIX = `local_agent.py --app` (own window via pywebview: setup installs
+`pywebview[qt]` on Linux — QtPy + PyQt6 + PyQt6-WebEngine wheels — and `pywebview` on macOS, optional; else the
+browser). `--update` rewrites `program/bin/maxed` and keeps the venv, the link and the menu entries / .app (they only
+call `program/bin/maxed`). No exe, WebView2, `.lnk`, registry PATH, `.bat`, `move_legacy`/`rehost` there.
+
 **App window:** its own, no dependencies — `python local_agent.py --app` (`maxedcode/webapp/`: stdlib server +
 HTML/CSS/JS page). The app window is `desktop\app\maxedcode.exe`: the installer builds it in place (`build-exe.ps1`:
 `maxedcode.cs` + `program.cs`, csc) and signs it with its own certificate `CN=maxedcode` (CurrentUser\My, not added to
@@ -101,10 +121,15 @@ picks the port itself (1234 LM Studio, 11434 Ollama, 8080 llama.cpp, 8000, 5001,
 subnet, takes the model list and the context from the server, writes `program\config.json`, two launchers, README.txt,
 `program\bin\*.bat` and the user's PATH (`maxed` from any folder; `--no-path`, `--no-shortcut`). It does not touch the data
 (`~\.maxedcode`: sessions, memory, settings.json); the old `settings.bat` is renamed to `settings.bat.old`.
+Linux / macOS (see "Running"): `install.sh` + `installer/bootstrap.sh` are the setup exe there; the release also carries
+`maxedcode-setup.sh` (a copy of install.sh). `maxedcode.zip` is packed by `installer/zip_program.py` (release.yml), not
+Compress-Archive: forward slashes, 755 + LF for `*.sh`, plus `desktop/maxedcode.png` and `bootstrap.sh`;
+`update.unpack` also turns backslash names into folders and chmods `*.sh` on POSIX. Tests: `tests.yml` runs the suites on
+windows/ubuntu/macos and a real `install.sh` install + uninstall on ubuntu/macos (`posix-install`).
 
 **The installer is English only.** Everything inside `installer\` and `agent\install.py` — user-facing text, questions,
 errors, comments, docstrings, and the names of generated files (`start.bat`, `configure.bat`, `README.txt`) — is written in
-English (and so are the root `README.md` and `install.ps1`).
+English (and so are the root `README.md`, `install.ps1` and `install.sh`).
 
 ## Structure
 ```

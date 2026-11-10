@@ -85,10 +85,15 @@ class Setup:
         self.k = self.root.winfo_fpixels("1i") / 96
         self.root.title("maxedcode - model server" if self.configure else "maxedcode setup")
         with suppress(Exception):
-            ico = mod.SRC_DESKTOP / "maxedcode.ico"
-            if not ico.exists():
-                ico = mod.HERE / "desktop" / "maxedcode.ico"
-            self.root.iconbitmap(default=str(ico))
+            if mod.WINDOWS:
+                ico = mod.SRC_DESKTOP / "maxedcode.ico"
+                if not ico.exists():
+                    ico = mod.HERE / "desktop" / "maxedcode.ico"
+                self.root.iconbitmap(default=str(ico))
+            else:                        # Tk on Linux / macOS takes no .ico: the png
+                png = mod.SRC_DESKTOP / "maxedcode.png"
+                self.icon = tk.PhotoImage(file=str(png if png.exists() else mod.HERE / "desktop" / "maxedcode.png"))
+                self.root.iconphoto(True, self.icon)
         w, h = self.px(860), self.px(600)
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
@@ -300,15 +305,24 @@ class Setup:
                 where.configure(text="")
                 found.configure(text="")
                 return
-            where.configure(text=f"program:  {root / self.m.PROGRAM}\n"
-                                 f"app:      {root / 'maxedcode app.bat'}\n"
-                                 f"CLI:      {root / 'maxedcode CLI.bat'}\n"
-                                 f"data:     {self.m.DATA_DIR}")
+            if self.m.WINDOWS:
+                where.configure(text=f"program:  {root / self.m.PROGRAM}\n"
+                                     f"app:      {root / 'maxedcode app.bat'}\n"
+                                     f"CLI:      {root / 'maxedcode CLI.bat'}\n"
+                                     f"data:     {self.m.DATA_DIR}")
+            else:
+                where.configure(text=f"program:  {root / self.m.PROGRAM}\n"
+                                     f"launcher: {root / self.m.PROGRAM / 'bin' / 'maxed'} (maxed app: the window)\n"
+                                     f"command:  {self.m.local_bin() / 'maxed'}\n"
+                                     f"data:     {self.m.DATA_DIR}")
             there = (root / self.m.PROGRAM / "install.py").exists()
+            places = ("Shortcuts \"maxedcode app\" and \"maxedcode CLI\" go on the desktop and in Start, maxed "
+                      "works in any folder" if self.m.WINDOWS else
+                      "maxedcode.app goes to ~/Applications, maxed works in any terminal" if self.m.MACOS else
+                      "\"maxedcode\" and \"maxedcode CLI\" go to the app menu, maxed works in any terminal")
             found.configure(text=("maxedcode is already installed here: setup updates it and keeps the model server. "
                                   if there else "Already installed somewhere else? Pick that folder to update it. ") +
-                            "Shortcuts \"maxedcode app\" and \"maxedcode CLI\" go on the desktop and in Start, maxed "
-                            "works in any folder; chats, memory and settings (data) are never removed.")
+                            places + "; chats, memory and settings (data) are never removed.")
         self.v_dir.trace_add("write", show)
         show()
 
@@ -665,9 +679,11 @@ class Setup:
         if not self.a.no_deps and (not self.configure or deps_missing):
             rows.append(("deps", "Install / update the Python packages (needs internet, 1-2 minutes)", True))
         if not self.configure and not self.a.no_shortcut:
-            rows.append(("link", "Shortcuts on the desktop and in Start: maxedcode app and maxedcode CLI", True))
+            rows.append(("link", "Shortcuts on the desktop and in Start: maxedcode app and maxedcode CLI"
+                         if self.m.WINDOWS else self.m.option_label("link"), True))
         if not self.configure and not self.a.no_path:
-            rows.append(("path", "Type maxed in any CMD / PowerShell window (adds program\\bin to PATH)", True))
+            rows.append(("path", "Type maxed in any CMD / PowerShell window (adds program\\bin to PATH)"
+                         if self.m.WINDOWS else self.m.option_label("path"), True))
         if models is not None:
             rows.append(("test", "Send a short test request to the model (loads it now)", False))
         if rows:
@@ -743,8 +759,13 @@ class Setup:
         else:
             self.h_title.configure(text="Saved" if self.configure else "maxedcode is installed")
             want = getattr(self, "want", {}) or {}
-            how = ("\"maxedcode app\" (window) and \"maxedcode CLI\" on the desktop and in Start" if want.get("link")
-                   else "start it with maxedcode app.bat (window) or maxedcode CLI.bat in that folder")
+            if self.m.WINDOWS:
+                how = ("\"maxedcode app\" (window) and \"maxedcode CLI\" on the desktop and in Start" if want.get("link")
+                       else "start it with maxedcode app.bat (window) or maxedcode CLI.bat in that folder")
+            else:
+                how = "maxed app (window) or maxed (terminal)"
+                if want.get("link"):
+                    how += ", maxedcode in Launchpad" if self.m.MACOS else ", maxedcode in the app menu"
             how += ", maxed in a new terminal" if want.get("path") else ""
             self.h_sub.configure(text=f"In {root}: {how}. Change the model server later: Settings - maxedcode in "
                                       "the app, or maxed configure." if not self.configure else
@@ -754,7 +775,7 @@ class Setup:
             lb.configure(fg=SIDE_FG, text="✓  " + self.steps[i])
         self.b_back.configure(state="disabled")
         self.b_cancel.configure(state="normal", text="Close")
-        app = root / "maxedcode app.bat"
+        app = root / "maxedcode app.bat" if self.m.WINDOWS else self.dest / "bin" / "maxed"
         if not self.configure and app.exists() and not errors:
             self.b_next.configure(text="Open maxedcode", state="normal", command=lambda: self.open_app(app))
             self.b_next.focus_set()
@@ -772,8 +793,17 @@ class Setup:
 
     def start(self, path):
         with suppress(OSError):
-            os.startfile(str(path))
+            if os.name == "nt":
+                os.startfile(str(path))
+            else:                    # Linux / macOS: the default program for a file (the log)
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
     def open_app(self, app):
-        self.start(app)
+        if self.m.WINDOWS:
+            self.start(app)
+        else:                        # program/bin/maxed app, on its own after setup closes
+            with suppress(OSError):
+                subprocess.Popen([str(app), "app"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True, cwd=str(Path.home()))
         self.root.after(400, self.quit)

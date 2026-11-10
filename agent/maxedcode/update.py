@@ -11,6 +11,8 @@
 Off: "auto_update": false in ~\\.maxedcode\\settings.json (the app: Settings -> General), MAXEDCODE_NO_UPDATE=1,
 MAXEDCODE_OFFLINE=1. Never for a git working copy or a copy outside an install (<root>\\program). Only GitHub is
 asked, with a generic User-Agent: nothing about the user, the PC or the projects. Stdlib only.
+The same on Linux / macOS: install.py --update runs with the Python of the install's venv (program/.venv), writes
+program/bin/maxed again and leaves the venv, ~/.local/bin/maxed and the menu entries / maxedcode.app as they are.
 """
 import atexit
 import json
@@ -19,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import suppress
@@ -148,11 +151,19 @@ def unpack(zip_path, target):
     root = target.resolve()
     import zipfile
     with zipfile.ZipFile(zip_path) as z:
-        for name in z.namelist():
-            out = (target / name).resolve()
+        members = z.infolist()
+        if os.sep == "/":         # a zip made on Windows may name its entries with backslashes
+            for m in members:
+                m.filename = m.filename.replace("\\", "/")
+        for m in members:
+            out = (target / m.filename).resolve()
             if out != root and root not in out.parents:
-                raise ValueError(f"bad path in the update: {name}")
-        z.extractall(target)
+                raise ValueError(f"bad path in the update: {m.filename}")
+        z.extractall(target, members)
+    if os.sep == "/":
+        for script in target.rglob("*.sh"):
+            with suppress(OSError):
+                script.chmod(0o755)
     if (target / "install.py").exists():
         return target
     inner = [d for d in target.iterdir() if (d / "install.py").exists()]
@@ -222,6 +233,14 @@ def check_async(done=None):
 
 
 def _alive(pid):
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)                          # signal 0: only asks whether the process exists
+        except ProcessLookupError:
+            return False
+        except PermissionError:                      # it exists, as another user's process
+            return True
+        return True
     import ctypes
     k = ctypes.windll.kernel32
     h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
@@ -287,7 +306,8 @@ def apply(say=None, manual=False):
             ok, out = False, str(e)
         if not ok:
             _change(ready=None, dir=None, failed=version, error=f"install of {version}: {out[-300:]}")
-            say(f"the update to {version} did not install; the log: %TEMP%\\maxedcode-setup.log")
+            log = "%TEMP%\\maxedcode-setup.log" if os.name == "nt" else Path(tempfile.gettempdir()) / "maxedcode-setup.log"
+            say(f"the update to {version} did not install; the log: {log}")
             return None
         shutil.rmtree(src, ignore_errors=True)
         _change(ready=None, dir=None, failed=None, error=None, updated=version, notice=version)
