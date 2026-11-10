@@ -287,9 +287,30 @@ class Setup:
             value=str(Path(self.a.dir).expanduser()) if self.a.dir else str(self.m.DEFAULT_DIR))
         ttk.Entry(row, textvariable=self.v_dir).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse...", command=self.browse).pack(side="left", padx=(self.px(8), 0))
-        ttk.Label(b, text=f"Already installed? Setup updates the program and keeps your chats and settings "
-                          f"({self.m.DATA_DIR}).", style="Muted.TLabel", wraplength=self.px(600),
-                  justify="left").pack(anchor="w", pady=(self.px(8), 0))
+        # exactly where things go, for the folder typed right now
+        where = ttk.Label(b, style="Muted.TLabel", wraplength=self.px(600), justify="left", font=self.f_mono)
+        where.pack(anchor="w", pady=(self.px(10), 0))
+        found = ttk.Label(b, style="Muted.TLabel", wraplength=self.px(600), justify="left")
+        found.pack(anchor="w", pady=(self.px(8), 0))
+
+        def show(*_):
+            text = self.v_dir.get().strip().strip('"')
+            root = Path(text).expanduser() if text else None
+            if not root:
+                where.configure(text="")
+                found.configure(text="")
+                return
+            where.configure(text=f"program:  {root / self.m.PROGRAM}\n"
+                                 f"app:      {root / 'maxedcode app.bat'}\n"
+                                 f"CLI:      {root / 'maxedcode CLI.bat'}\n"
+                                 f"data:     {self.m.DATA_DIR}")
+            there = (root / self.m.PROGRAM / "install.py").exists()
+            found.configure(text=("maxedcode is already installed here: setup updates it and keeps the model server. "
+                                  if there else "Already installed somewhere else? Pick that folder to update it. ") +
+                            "Shortcuts \"maxedcode app\" and \"maxedcode CLI\" go on the desktop and in Start, maxed "
+                            "works in any folder; chats, memory and settings (data) are never removed.")
+        self.v_dir.trace_add("write", show)
+        show()
 
     def browse(self):
         d = filedialog.askdirectory(parent=self.root, initialdir=self.v_dir.get() or str(Path.home()),
@@ -721,9 +742,10 @@ class Setup:
             self.say_status(errors[-1][:140], "err")
         else:
             self.h_title.configure(text="Saved" if self.configure else "maxedcode is installed")
-            self.h_sub.configure(text="Change the model server later: Settings - maxedcode in the app, or maxed "
-                                      "configure." if not self.configure else "maxedcode uses the new server from "
-                                                                              "its next start.")
+            self.h_sub.configure(text=f"In {root}: \"maxedcode app\" (window) and \"maxedcode CLI\" on the desktop "
+                                      "and in Start, maxed in a new terminal. Change the model server later: Settings - "
+                                      "maxedcode in the app, or maxed configure." if not self.configure else
+                                 "maxedcode uses the new server from its next start.")
             self.say_status("done", "ok")
         for i, lb in enumerate(self.step_labels):
             lb.configure(fg=SIDE_FG, text="✓  " + self.steps[i])

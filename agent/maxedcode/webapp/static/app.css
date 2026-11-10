@@ -540,6 +540,10 @@ body.resizing iframe { pointer-events: none; }
 .setup-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .setup-path { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setup-acts { flex: none; display: flex; align-items: center; gap: 4px; margin-left: auto; }
+/* one column of actions: every "Use" is the same width and ends at the same edge as the rows' (their 8px padding) */
+.setup-card .setup-acts .btn:not(.link), .setup-card .cli-add .btn { min-width: 96px; }
+.setup-card .cli-add { padding: 0 8px; margin-top: 8px; }
+.setup-card .save-row { padding: 0 2px; }
 .setup-group { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 8px 2px; }
 .recent-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .recent-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

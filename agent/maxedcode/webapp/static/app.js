@@ -339,7 +339,8 @@
     try { var v = localStorage.getItem('mx.' + key); return v === null ? fallback : JSON.parse(v) } catch (e) { return fallback }
   }
   function setPref(key, value) { try { localStorage.setItem('mx.' + key, JSON.stringify(value)) } catch (e) {} }
-  var lang = pref('lang', 'en')
+  // Until picked in Settings -> General: the language of Windows (WebView2 reports it), English for any other
+  var lang = pref('lang', /^ru\b/i.test(navigator.language || '') ? 'ru' : 'en')
   // Once: while Plan/Auto was one switch for the whole window, picking Plan in a chat also saved it as the
   // default, and every chat went on in Plan. Back to Auto, as the old window ran.
   if (!pref('seatsPerChat', false)) {

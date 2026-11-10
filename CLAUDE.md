@@ -18,9 +18,11 @@ python install.py --launchers              # from <install>\program: launchers/R
 python local_agent.py                      # without config.json (git clone) it first asks for the server: install.py --first-run
 start.bat (repository)  |  maxed (after installation, from any folder)   # TUI (program\bin\maxed.bat in the current CMD window)
 irm .../install.ps1 | iex                  # one-line install (repo root): Python + download + install.py --yes
-npm i -g maxedcode; maxedcode              # npm (bin/maxedcode.js): first run installs from the package (bootstrap.ps1 +
-                                           # install.py --console --dir), after npm update — silent --yes; then maxed.bat with
-                                           # the same arguments; version — ~\.maxedcode\npm-install.json; maxedcode setup
+npm i -g maxedcode; maxedcode              # npm (bin/maxedcode.js): the first run of the package opens the setup window
+                                           # (bootstrap.ps1 + install.py --dir <offered folder>, as Maxedcode_setup.exe; an install
+                                           # made before is offered for update; the folder chosen comes back via MX_DIRFILE);
+                                           # after an npm update — silent --yes into that folder; then maxed.bat with the same
+                                           # arguments; version + folder — ~\.maxedcode\npm-install.json; maxedcode setup
 ```
 Installation (default `%LOCALAPPDATA%\Programs\maxedcode`): the root contains only `maxedcode app.bat`, `maxedcode CLI.bat`,
 `README.txt` and `program\` (the whole program + `config.json` + `bin\maxed.bat`/`configure.bat`/`shortcuts.bat`, with `bin` on PATH;

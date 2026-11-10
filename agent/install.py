@@ -740,14 +740,19 @@ def load_cur(dest):
 
 
 def choose_dir():
-    """Install folder: the default one, or typed."""
-    if ARGS.dir:
-        return Path(ARGS.dir).expanduser().resolve()
+    """Install folder: --dir (or the default one) is the first answer, another one can be typed; --yes takes it."""
+    first = Path(ARGS.dir).expanduser().resolve() if ARGS.dir else DEFAULT_DIR
+    if ARGS.yes:
+        return first
     section("Install folder")
-    n = select("Install to", [(str(DEFAULT_DIR), f"default; chats and settings stay in {DATA_DIR}"),
+    n = select("Install to", [(str(first), ("found: updates it; " if (first / PROGRAM / "install.py").exists() else
+                                            "default; " if first == DEFAULT_DIR else "") +
+                               f"chats and settings stay in {DATA_DIR}"),
                               ("Another folder ...", "")], 0)
-    path = str(DEFAULT_DIR) if n == 0 else ask("Folder", str(DEFAULT_DIR))
-    return Path(path).expanduser().resolve()
+    path = str(first) if n == 0 else ask("Folder", str(first))
+    root = Path(path).expanduser().resolve()
+    say(f"the program goes to {root / PROGRAM}; maxedcode app.bat and maxedcode CLI.bat to {root}")
+    return root
 
 
 def copy_files(dest):
@@ -1476,6 +1481,8 @@ def main():
         code = gui.run(sys.modules[__name__]) if gui and gui.available() else None
         if code is not None:          # None: no window could be opened, the console wizard runs instead
             sys.exit(code)
+        if not (sys.stdin and sys.stdin.isatty()):    # and no console to ask in either: the defaults
+            ARGS.yes = True
     UI["vt"] = not ARGS.yes and vt_on()
     title = "maxedcode - first start" if ARGS.first_run else \
         "maxedcode - model server" if ARGS.configure else "maxedcode setup"
