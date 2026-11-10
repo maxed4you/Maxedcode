@@ -11,6 +11,7 @@ import re
 import subprocess
 from contextlib import suppress
 from pathlib import Path
+from . import shelltool
 from .config import HOME
 from .util import frontmatter
 
@@ -101,6 +102,7 @@ def agents():
                 fm, body = frontmatter(f.read_text(encoding="utf-8", errors="replace"))
                 t = fm.get("tools") or ""
                 t = t if isinstance(t, list) else [x.strip() for x in re.split(r"[,\s]+", t) if x.strip()]
+                t = [shelltool.canon(x) for x in t]
                 out.setdefault(fm.get("name") or f.stem, {"name": fm.get("name") or f.stem,
                                                           "description": fm.get("description") or "",
                                                           "model": fm.get("model") or "", "tools": t,

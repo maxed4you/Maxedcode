@@ -13,15 +13,17 @@ from pathlib import Path
 _TEST_HOME = tempfile.TemporaryDirectory(prefix="maxedcode-filewatch-tests-")
 os.environ["AGENT_HOME"] = _TEST_HOME.name
 
-from maxedcode import filewatch
+from maxedcode import filewatch, shelltool
 from maxedcode.filewatch import FileWatch, named_files, watched_files
 from maxedcode.util import wire
 
 
 def touch(path, text):
     """Write and push the mtime forward: two writes inside one clock tick must still count as a change."""
+    old = os.stat(path).st_mtime if os.path.exists(path) else 0
     Path(path).write_text(text, encoding="utf-8")
-    t = time.time() + 2
+    # strictly after the previous mtime: setUp and the test may run inside one clock tick (seen on CI)
+    t = max(time.time() + 2, old + 1)
     os.utime(path, (t, t))
 
 
@@ -58,8 +60,8 @@ class FileWatchTests(unittest.TestCase):
     def test_a_named_file_outside_the_folder_is_watched(self):
         with tempfile.TemporaryDirectory() as other:
             out = os.path.join(other, "report.txt")
-            cmd = f'Set-Content -Path "{out}" -Value hi'
-            files = watched_files("powershell", {"command": cmd})
+            cmd = f'Set-Content -Path "{out}" -Value hi' if os.name == "nt" else f'echo hi > "{out}"'
+            files = watched_files(shelltool.NAME, {"command": cmd})
             self.assertEqual(files, [out])
             w = FileWatch()
             snap = w.before(self.root, files)
@@ -91,12 +93,14 @@ class FileWatchTests(unittest.TestCase):
         self.assertEqual(watched_files("subagent", {"prompt": "x"}), [])
         self.assertEqual(watched_files("mcp__fs__write", {}), [])
 
+    @unittest.skipUnless(os.name == "nt", "drive-letter paths: Windows only (test_posix_platform covers /paths)")
     def test_named_files_parses_quoted_and_bare_paths(self):
         self.assertEqual(named_files(r"python C:\w\run.py > 'D:\out dir\log.txt'"),
                          [r"C:\w\run.py", r"D:\out dir\log.txt"])
 
 
 class ScratchNoteTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows paths and %TEMP% in the hint")
     def test_new_project_files_get_one_cleanup_hint(self):
         root = r"C:\w\proj"
         changes = [("new", r"C:\w\proj\_t1.bat", "", None), ("new", r"C:\w\proj\.coverage", "", None),
@@ -158,6 +162,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
              patch.object(agent.mcp, "cfg", return_value={}), \
              patch.object(app_module.hooks, "run", new=AsyncMock(return_value=hook)), \
              patch.dict(S, {"auto": True, "mode": "auto"}):
+            work = os.path.realpath(work)       # macOS: /var/folders is /private/var/folders
             os.chdir(work)
             try:
                 async with agent.run_test(size=(120, 40)):

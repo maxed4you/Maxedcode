@@ -12,6 +12,7 @@ import sys
 import time
 
 from . import servers
+from .shelltool import POSIX
 
 APP_DIR = Path(__file__).resolve().parent.parent
 CFG = {}
@@ -137,10 +138,28 @@ def cost_text(cost, model=None):
 # AppData\Local\Programs is open: it holds installed programs (their configs and scripts), not browser profiles and tokens.
 PROTECTED = [str(x) for x in (SETTINGS.get("protected_paths") or [])] or [r"\.env(?:\.|$)", r"\.ssh", r"(?<![A-Z0-9_])AppData(?![\\/]+Local[\\/]+(?:Temp|Programs)(?![\w.-]))"]
 
+
+def posix_protected(home=None):
+    """Default protected paths on Linux/macOS. Their AppData (app data, browser profiles, tokens) is ~/.config,
+    ~/.local/share and ~/Library (its Caches stay open, like AppData\\Local\\Temp). System folders are protected
+    only as a whole path (an edit_file target), so `cat /etc/os-release` or `/usr/bin/env python3` still run."""
+    home_re = (r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(str(home or Path.home()).rstrip("/")) +
+               r"|/home/[^/\s]+|/Users/[^/\s]+|/root)")
+    return [r"\.env(?:\.|$)", r"\.ssh", r"\.gnupg", home_re + r"/\.config(?:/|$)", home_re + r"/\.local/share(?:/|$)",
+            home_re + r"/Library/(?!Caches(?:/|$))", r"^/(?:etc|usr|bin|sbin|boot|lib|lib64|System|private/etc)(?:/\S*)?$"]
+
+
+if POSIX and not SETTINGS.get("protected_paths"):
+    PROTECTED = posix_protected()
+
 # system_prompt.md lies next to the entry script (agent / app folder), hence one level above the package.
 PROMPT_FILE = Path(__file__).resolve().parent.parent / "system_prompt.md"
 _BASE = PROMPT_FILE.read_text(encoding="utf-8") if PROMPT_FILE.exists() else \
-    "You are an agent in Windows PowerShell. Answer briefly. Do only what is asked."
+    ("You are an agent in bash. Answer briefly. Do only what is asked." if POSIX else
+     "You are an agent in Windows PowerShell. Answer briefly. Do only what is asked.")
+if POSIX:
+    from .prompt_posix import posix_prompt
+    _BASE = posix_prompt(_BASE)
 # The prefix (system + tools) is built once and never rebuilt: Strata caches it.
 # The environment block is deliberately NOT inside SYSTEM. The engine checkpoints a prompt read from
 # token 0 at its first turn boundary - the end of the system turn - and every chat of the same client
@@ -148,7 +167,21 @@ _BASE = PROMPT_FILE.read_text(encoding="utf-8") if PROMPT_FILE.exists() else \
 # that turn different for every folder and every day, so a new session reads the whole prefix again.
 # Sent as the first message after memory, the system turn stays byte-identical across sessions.
 SYSTEM = _BASE.rstrip()
-ENV_BLOCK = (f"<env>\nOS: Windows; shell: Windows PowerShell (tool: powershell)\n"
+
+
+def _os_line():
+    """The <env> OS line: Windows as before; on Linux/macOS the system name and version and the bash tool."""
+    if not POSIX:
+        return "OS: Windows; shell: Windows PowerShell (tool: powershell)"
+    import platform
+    name = "macOS " + platform.mac_ver()[0] if sys.platform == "darwin" else platform.system()
+    with suppress(Exception):
+        if sys.platform.startswith("linux"):
+            name = "Linux (" + platform.freedesktop_os_release().get("PRETTY_NAME", "").strip() + ")"
+    return f"OS: {name.replace(' ()', '').strip()}; shell: bash (tool: bash)"
+
+
+ENV_BLOCK = (f"<env>\n{_os_line()}\n"
              f"Working directory: {os.getcwd()}\nUser home: {Path.home()}\nToday: {time.strftime('%Y-%m-%d, %A')}\n"
              # Without this line the model searched the disk to find the server when asked to switch models.
              # Kept neutral: a paragraph about "this CLI" made small models talk about it in unrelated chats.

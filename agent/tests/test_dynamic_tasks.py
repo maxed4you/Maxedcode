@@ -2,6 +2,7 @@ import unittest
 
 from maxedcode.tools import BUILTIN
 from maxedcode.tools.todo import TaskProgressGuard, copy_tasks, is_verification_tool, tool_todo, validate
+from maxedcode.shelltool import NAME as SHELL  # noqa: E402  (powershell on Windows, bash on Linux/macOS)
 
 
 class DynamicTaskValidationTests(unittest.TestCase):
@@ -104,9 +105,9 @@ class TaskProgressGuardTests(unittest.TestCase):
     def test_code_changes_then_test_requires_transition(self):
         self.guard.observe_tool("edit_file", {"path": "app.py"}, True)
         cmd = {"command": "python -m unittest discover -s tests -v"}
-        self.assertTrue(is_verification_tool("powershell", cmd))
+        self.assertTrue(is_verification_tool(SHELL, cmd))
         self.assertIn("verification", " ".join(TaskProgressGuard.__doc__.split()))
-        error = self.guard.blocked_reason("powershell", cmd, self.plan)
+        error = self.guard.blocked_reason(SHELL, cmd, self.plan)
         self.assertIn("completed implementation", error)
 
         updated = [
@@ -115,7 +116,7 @@ class TaskProgressGuardTests(unittest.TestCase):
             {"content": "Run focused regression tests", "status": "in_progress"},
         ]
         self.guard.plan_updated(self.plan, updated)
-        self.assertIsNone(self.guard.blocked_reason("powershell", cmd, updated))
+        self.assertIsNone(self.guard.blocked_reason(SHELL, cmd, updated))
 
     def test_only_successful_research_or_edits_create_checkpoints(self):
         self.guard.observe_tool("read_file", {"path": "missing.py"}, False)

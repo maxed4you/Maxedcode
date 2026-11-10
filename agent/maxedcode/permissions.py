@@ -2,7 +2,7 @@
 
 Rule: tool or tool(pattern) — pattern is a regex over the main argument (command/code/path).
 Read and write are checked separately: read_file/grep = read, edit_file/write_file = write,
-powershell/py_run = run. Protected paths are denied for both read and write even without a rule.
+powershell (bash on Linux/macOS)/py_run = run. Protected paths are denied for both read and write even without a rule.
 Commands: /allow, /deny, /ask, /permissions.
 """
 import json
@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from contextlib import suppress
 from .config import PERMS_FILE, PROTECTED, SETTINGS
+from . import shelltool
 
 READ = ("read_file", "grep")
 WRITE = ("edit_file", "write_file", "patch", "apply_diff")
@@ -30,6 +31,19 @@ DANGEROUS = [
     (r"\b(Format-Volume|diskpart|mkfs)\b|\bdd\s+if=", "disk-level operation"),
 ]
 DANGEROUS_DELETE = r"\b(?:Remove-Item|ri|del|erase|rm|rmdir|rd)\b"
+# Linux/macOS only (the bash tool), checked before DANGEROUS so `sudo rm x` reports sudo, not a plain delete.
+POSIX_DANGEROUS = [
+    (r":\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;?\s*:", "fork bomb"),
+    # Command position only: `grep sudo log.txt` or `echo reboot` is not one.
+    (r"(?:^|[;&|(\n'\"`]|\b(?:xargs|nohup|exec|time|then|do))\s*(?:sudo|doas|pkexec)\b|(?:^|[;&|(\n'\"`])\s*su\s+(?:-\w*\s+)*-c\b",
+     "runs a command as root"),
+    (r"(?:^|[;&|(\n'\"`]|\b(?:sudo|doas|then|do))\s*(?:shutdown|reboot|halt|poweroff)\b|(?:^|[;&|(\n'\"`]|\bsudo)\s*init\s+[06]\b"
+     r"|\bsystemctl\s+(?:poweroff|reboot|halt|suspend|hibernate)\b", "shuts down or restarts the computer"),
+    (r"\bdd\b[^\n]*\bof=/dev/|>\s*/dev/(?:sd[a-z]|nvme\d|hd[a-z]|disk\d|mmcblk\d|vd[a-z])|\b(?:mkfs(?:\.\w+)?|fdisk|sfdisk|parted|wipefs|diskutil\s+(?:erase\w*|partition\w*|zero\w*))\b",
+     "disk-level operation"),
+]
+POSIX_SERIOUS = {"fork bomb", "runs a command as root", "shuts down or restarts the computer",
+                 "changes permissions of a system folder"}
 # Reasons that still confirm in AUTO mode: irreversible damage or work outside the project.
 # Ordinary work (writing an output file, editing a file) runs silently in AUTO.
 # Ordinary deletes ("recursive or forced delete", "deletes existing files", "deletes or renames files from
@@ -40,7 +54,7 @@ SERIOUS = {
     "downloads and executes remote code", "executes downloaded code", "downloads and then runs something",
     "force push", "deletes a Git reference", "discards uncommitted work", "deletes untracked files",
     "disk-level operation", CATASTROPHIC,
-}
+} | (POSIX_SERIOUS if shelltool.POSIX else set())
 
 # Plain-language wording for the confirmation dialog: what the call actually does.
 PLAIN = {
@@ -57,6 +71,10 @@ PLAIN = {
     "deletes or renames files from Python": "deletes or renames files",
     CATASTROPHIC: "deletes a whole drive, your home folder or a system folder",
     "writes files from Python": "writes a file",
+    "fork bomb": "starts processes until the computer freezes (fork bomb)",
+    "runs a command as root": "runs a command as root (sudo)",
+    "shuts down or restarts the computer": "shuts down or restarts the computer",
+    "changes permissions of a system folder": "changes owner or permissions of a whole system or home folder",
 }
 
 def explain(name, key):
@@ -152,12 +170,66 @@ def catastrophic_delete(command):
                 return True
     return False
 
+# Linux/macOS: the root, the home folder and the system folders (macOS ones included).
+_POSIX_CATA = {"/", "~", "$home", "${home}", "/root", "/home", "/users", "/etc", "/usr", "/bin", "/sbin", "/lib",
+               "/lib64", "/boot", "/var", "/opt", "/dev", "/proc", "/sys", "/system", "/library", "/applications",
+               "/private", "/private/etc", "/private/var", "/volumes", "/usr/bin", "/usr/lib", "/usr/local", "/srv", "/mnt"}
+_POSIX_PREFIX = {"sudo", "doas", "command", "builtin", "nohup", "nice", "time", "exec", "env"}
+
+
+def _posix_cata_target(w):
+    w = w.strip().replace('"', "").replace("'", "").lower()
+    if not w or w.startswith("-"):
+        return False
+    # "/*", "~/", "$HOME/*", "/etc/." name the folder itself
+    w = re.sub(r"(?:/\.)+$", "", w.rstrip("*")).rstrip("/") or "/"
+    if w in _POSIX_CATA:
+        return True
+    with suppress(Exception):
+        home = str(Path.home()).lower().rstrip("/")
+        if home and w == home:
+            return True
+    # /home/<user>, /Users/<user>: someone's whole home folder
+    return bool(re.fullmatch(r"/(?:home|users)/[^/\s]+/?", w))
+
+
+def posix_catastrophic(command):
+    """Reason when a bash command wipes or re-permissions the root, a home folder or a system folder."""
+    for seg in re.split(r"[;&\n\r]+|\|\|", command or ""):
+        parts = seg.split("|")
+        for i, part in enumerate(parts):
+            words = part.strip().split()
+            while words and words[0].lower() in _POSIX_PREFIX:
+                words = words[1:]
+            if not words:
+                continue
+            head = words[0].rsplit("/", 1)[-1].lower()
+            args = [w for w in words[1:] if not w.startswith("-")]
+            flags = "".join(w for w in words[1:] if w.startswith("-") and not w.startswith("--"))
+            if head in ("rm", "rmdir", "unlink", "shred") and any(_posix_cata_target(w) for w in args):
+                return CATASTROPHIC
+            # "echo / | xargs rm -rf": a delete fed by the previous command's root/home/system argument
+            feeds_rm = (head == "rm" and not args) or (head == "xargs" and any(w.rsplit("/", 1)[-1] == "rm" for w in args))
+            if i > 0 and feeds_rm and any(_posix_cata_target(w) for w in parts[i - 1].split()[1:] if not w.startswith("-")):
+                return CATASTROPHIC
+            if head == "find" and args and _posix_cata_target(args[0]) and re.search(r"\s-(?:delete|exec)\b", part):
+                return CATASTROPHIC
+            if head in ("chmod", "chown", "chgrp") and "R" in flags.upper() and any(_posix_cata_target(w) for w in args):
+                return "changes permissions of a system folder"
+    return None
+
+
 def dangerous(name, command):
-    """Reason string if a powershell command is risky, else None."""
-    if name != "powershell" or not command:
+    """Reason string if a shell-tool command is risky, else None."""
+    if name != shelltool.NAME or not command:
         return None
     if catastrophic_delete(command):
         return CATASTROPHIC
+    if shelltool.POSIX:
+        why = posix_catastrophic(command) or next(
+            (why for pat, why in POSIX_DANGEROUS if re.search(pat, command, re.I)), None)
+        if why:
+            return why
     rest = _without_cache_deletes(command)
     if rest is not None:
         return dangerous(name, rest) if rest.strip() else None
@@ -194,18 +266,25 @@ _PY_CATASTROPHIC = re.compile(
     r"(?is)(?:rmtree|remove|unlink|rmdir)\s*\(\s*(?:r?['\"](?:[A-Za-z]:[\\/]*|~[\\/]*|[A-Za-z]:[\\/]+(?:Windows|Users|Program Files)[\\/]*)['\"]"
     r"|(?:(?:pathlib\.)?Path\.home\(\)|os\.path\.expanduser\(\s*['\"]~['\"]\s*\)|os\.environ\[\s*['\"]USERPROFILE['\"]\s*\])\s*[,)])")
 
+# Linux/macOS: shutil.rmtree("/"), os.remove("/etc") and the like.
+_PY_CATASTROPHIC_POSIX = re.compile(
+    r"(?is)(?:rmtree|remove|unlink|rmdir)\s*\(\s*r?['\"](?:/|~/?|/(?:home|Users|etc|usr|bin|sbin|var|opt|lib|boot|System|Library|Applications)/?)['\"]")
+
+
 def dangerous_python(code, auto=False):
     """Reason string when a py_run snippet appears to write, rename, or delete files.
     With auto=True (AUTO mode) only deletion/renaming is a reason to confirm."""
     source = code or ""
     if _PYTHON_DESTRUCTIVE.search(source) and _PY_CATASTROPHIC.search(source):
         return CATASTROPHIC
+    if shelltool.POSIX and _PYTHON_DESTRUCTIVE.search(source) and _PY_CATASTROPHIC_POSIX.search(source):
+        return CATASTROPHIC
     if _PYTHON_DESTRUCTIVE.search(source):
         return "deletes or renames files from Python"
     # Catch risky commands embedded in a Python snippet instead of allowing py_run to bypass the
     # PowerShell command guard. Ordinary subprocess-based test invocations remain allowed.
-    if dangerous("powershell", source):
-        return dangerous("powershell", source)
+    if dangerous(shelltool.NAME, source):
+        return dangerous(shelltool.NAME, source)
     if auto:
         return None
     if _PYTHON_WRITES.search(source):
@@ -255,7 +334,7 @@ def save(rules):
 
 def match(rule, name, key):
     tool, _, pat = rule.partition("(")
-    if tool.strip() not in (name, "*"):
+    if shelltool.canon(tool.strip()) not in (name, "*"):
         return False
     # only the rule's own closing bracket: rstrip(")") also ate the one of an escaped "\)" at the end of a
     # command, left a lone backslash, and every later check of that tool raised re.error
@@ -285,7 +364,7 @@ def exec_policy_decision(name, key, policy=None):
     {"pattern": "regex", "decision": ...}. Allow-prefix rules are opt-in through
     `honor_allow_prefixes`; otherwise an allow proposal cannot silently grant authority.
     """
-    if name not in ("powershell", "py_run"):
+    if name not in (shelltool.NAME, "py_run"):
         return None, None
     config = policy if isinstance(policy, dict) else SETTINGS.get("exec_policy", {})
     if not isinstance(config, dict):
@@ -321,7 +400,7 @@ def exec_policy_decision(name, key, policy=None):
 
 def requested_exec_policy_amendment(name, command):
     """Produce a reviewable policy proposal; never persist or honor it automatically."""
-    if name not in ("powershell", "py_run") or not str(command or "").strip():
+    if name not in (shelltool.NAME, "py_run") or not str(command or "").strip():
         return None
     tokens = _command_tokens(command)
     if not tokens:

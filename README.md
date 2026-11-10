@@ -1,11 +1,11 @@
 # maxedcode
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6.svg)](#what-you-need)
+[![Windows | Linux | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D6.svg)](#what-you-need)
 [![npm](https://img.shields.io/npm/v/maxedcode.svg)](https://www.npmjs.com/package/maxedcode)
 [![tests](https://github.com/maxed4you/Maxedcode/actions/workflows/tests.yml/badge.svg)](https://github.com/maxed4you/Maxedcode/actions/workflows/tests.yml)
 
-A coding agent for Windows that runs on **your own models**. It reads and edits your project, runs PowerShell and
+A coding agent for Windows (and now Linux and macOS) that runs on **your own models**. It reads and edits your project, runs PowerShell and
 Python, searches files and the web, and remembers your chats. Use any model you like: a small one on your own PC or a
 big one in the cloud. It works with LM Studio, Ollama, llama.cpp, vLLM, Jan, Strata, a server on another PC in your
 network, cloud APIs (OpenAI, Claude, Gemini, DeepSeek, Groq, Mistral, xAI, OpenRouter ...) or any OpenAI-compatible
@@ -56,11 +56,12 @@ Qwen 3.8 Flash Next.
 
 ## What you need
 
-- Windows 10 or 11
+- Windows 10 or 11, Linux, or macOS
 - A model server: on this PC (LM Studio, Ollama, llama.cpp, Strata ...), on another PC in your network, or a cloud
   API key. It doesn't have to be running while you install.
 
-Python 3.10+ is installed for you if it's missing.
+Python 3.10+ is installed for you if it's missing (Windows: Python 3.12; Linux / macOS: Python 3.12 through
+[uv](https://docs.astral.sh/uv/) in `~/.maxedcode/uv`, no sudo).
 
 ## Install
 
@@ -87,6 +88,26 @@ short wizard.
 All three find Python 3.10+ (or install Python 3.12 for you), look for a model server on this PC, install the app and
 the CLI, make the shortcuts and add `maxed` to PATH. Setup never starts a model server for you: if yours isn't
 running, its address is saved and maxedcode connects once you start it.
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh
+```
+
+or the same npm package: `npm install -g maxedcode`, then `maxedcode` (it detects the system). In a terminal the
+setup wizard asks the install folder (default `~/.local/share/maxedcode`) and the model server; then:
+
+- the program goes to `<folder>/program` with its own Python environment `program/.venv` (the system Python is
+  never changed; if it cannot make a venv, as on Debian / Ubuntu without `python3-venv`, setup uses uv and its own
+  Python instead)
+- `maxed` is linked in `~/.local/bin`; if that folder is not in your PATH yet, setup adds it to your shell's start
+  file (`~/.bashrc`, `~/.zshrc` ...) with a marker line that `maxed uninstall` takes out again
+- the app: "maxedcode" and "maxedcode CLI" in the app menu (Linux) or `~/Applications/maxedcode.app` (macOS);
+  `maxed app` opens its own window (pywebview: Qt on Linux, Cocoa on macOS) or, without it, a tab in your browser
+
+No sudo is needed. `MAXEDCODE_YES=1` installs with the defaults, `MAXEDCODE_ARGS="--dir ~/tools/maxedcode"` passes
+installer options.
 
 > **About Windows warnings.** maxedcode has no paid code-signing certificate. The PowerShell and npm installs don't
 > trigger SmartScreen. The app window's `.exe` is compiled and signed on your own PC during setup. Only the
@@ -131,6 +152,10 @@ program\            everything else
 ```
 
 Your chats, memory and settings live in `%USERPROFILE%\.maxedcode`. Updating or reinstalling never touches them.
+
+On Linux / macOS the folder (`~/.local/share/maxedcode`) holds `README.txt` and `program/` (with
+`program/bin/maxed`, the launcher); the data is in `~/.maxedcode`. `maxed shortcuts` makes the menu entries /
+`maxedcode.app` again.
 
 ## Model servers
 

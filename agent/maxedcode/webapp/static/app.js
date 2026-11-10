@@ -326,11 +326,40 @@
     nrDanger: ['Опасная команда не выполнена. Проверьте её и выполните сами, если уверены.', 'A dangerous command was not run. Check it and run it yourself if you are sure.'],
     nrTerminal: ['Открыть в терминале', 'Open in the terminal'],
   }
+  // macOS / Linux (a browser tab or the pywebview window, see webapp/native.py): their own names for the file
+  // manager, the terminal and the trash. The Windows app window (navigator.platform "Win32") keeps the texts above.
+  var OS = /^Mac/i.test(navigator.platform || '') ? 'mac' : /^Win/i.test(navigator.platform || '') ? 'win' : 'other'
+  if (OS !== 'win') {
+    var FM = OS === 'mac' ? ['Finder', 'Finder'] : ['файловом менеджере', 'the file manager']
+    TEXT.explorer = OS === 'mac' ? ['Finder', 'Finder'] : ['Файловый менеджер', 'File manager']
+    TEXT.apps.explorer = [TEXT.explorer[0] + ' (по умолчанию)', TEXT.explorer[1] + ' (default)']
+    TEXT.apps.terminal = ['Терминал', 'Terminal']
+    TEXT.openFolder = ['Открыть в ' + FM[0], 'Open in ' + FM[1]]
+    TEXT.fsOpenWith = ['Открыть программой по умолчанию', 'Open with the default app']
+    TEXT.fsReveal = ['Показать в ' + FM[0], 'Show in ' + FM[1]]
+    TEXT.fsDelete = ['Удалить в корзину', 'Move to the Trash']
+    TEXT.fsDeleteAsk = ['Переместить в корзину?', 'Move to the Trash?']
+    TEXT.cloudKeySafe = ['Ключ хранится в связке ключей системы (или в файле, доступном только вам) и не показывается снова. Несколько ключей одного провайдера — запасные: при лимите запрос уходит на следующий.',
+      'The key is kept in the system keyring (or in a file only you can read) and never shown again. Several keys of one provider are spares: a rate-limited request moves to the next one.']
+  }
+  // The pywebview window (macOS / Linux) gives the page what a desktop window can: dialogs, real paths of dropped
+  // files, outside links in the system browser, notifications. undefined in the Windows exe and in a browser.
+  function pyApi() { return !(window.chrome && window.chrome.webview) && window.pywebview && window.pywebview.api || null }
+  if (!(window.chrome && window.chrome.webview)) {
+    var openPage = window.open
+    window.open = function (url) {
+      var a = pyApi(), u
+      try { u = new URL(String(url || ''), location.href) } catch (e) { u = null }
+      if (a && a.open_url && u && u.origin !== location.origin && /^(https?|mailto):$/.test(u.protocol)) { a.open_url(u.href); return null }
+      return openPage.apply(window, arguments)
+    }
+  }
   var TOOL_LABELS = {
     grep: ['Искомый код', 'Searched code', 'search'], glob: ['Поиск файлов', 'Found files', 'search'],
     read_file: ['Прочитан файл', 'Read a file', 'file'], edit_file: ['Изменён файл', 'Edited a file', 'pencil'],
     patch: ['Изменён файл', 'Edited a file', 'pencil'], apply_diff: ['Изменён файл', 'Edited a file', 'pencil'],
     write_file: ['Записан файл', 'Wrote a file', 'pencil'], powershell: ['Команда', 'Command', 'terminal'],
+    bash: ['Команда', 'Command', 'terminal'],
     py_run: ['Запуск Python', 'Ran Python', 'terminal'], code_mode: ['Скрипт', 'Script', 'terminal'],
     web_search: ['Поиск в интернете', 'Web search', 'globe'], fetch_url: ['Открыта страница', 'Fetched a page', 'globe'],
     browser: ['Браузер', 'Browser', 'globe'],
@@ -806,7 +835,7 @@
       var rules = el('button', 'pick small', t('nrRules'))
       rules.onclick = function () { openSettings(); document.querySelector('.tabs button[data-tab="cli"]').click() }
       box.appendChild(rules)
-    } else if (call.name === 'powershell' && call.args && call.args.command) {
+    } else if ((call.name === 'powershell' || call.name === 'bash') && call.args && call.args.command) {
       msg = t('nrDanger')
       var term = el('button', 'pick small', t('nrTerminal'))
       term.onclick = function () { openTerminal(call.args.command) }
@@ -1062,7 +1091,7 @@
     var a = ev.input || {}, box = el('div', 'ask-card approval')
     this.approvals = this.approvals || {}
     this.approvals[ev.id] = box
-    var act = EDIT_TOOLS[ev.tool] ? 'apEdit' : ev.tool === 'powershell' ? 'apCommand' : ev.tool === 'py_run' ? 'apPython'
+    var act = EDIT_TOOLS[ev.tool] ? 'apEdit' : (ev.tool === 'powershell' || ev.tool === 'bash') ? 'apCommand' : ev.tool === 'py_run' ? 'apPython'
       : ev.tool === 'browser' ? 'apBrowser' : ev.tool === 'cloud_code' ? 'apCloud' : /^mcp__/.test(ev.tool) ? 'apMcp' : 'apTool'
     box.appendChild(el('div', 'label', t('apHead') + ' ' + t(act) + (act === 'apTool' ? ' ' + ev.tool : '')))
     var lines = EDIT_TOOLS[ev.tool] ? editLines(ev.tool, a) : null
@@ -1522,6 +1551,7 @@
     if (document.hasFocus() && visible(chat)) return
     var title = (chat.title || 'maxedcode').slice(0, 80)
     if (window.chrome && chrome.webview) chrome.webview.postMessage({ notify: true, title: title, text: text })
+    else if (pyApi() && pyApi().notify) pyApi().notify(title, text)
     else if (window.Notification && Notification.permission === 'granted') new Notification(title, { body: text })
     else if (window.Notification && Notification.permission === 'default') Notification.requestPermission()
   }
@@ -2382,13 +2412,25 @@
     autosize()
   }
   function mention(p) { return '@' + (/\s/.test(p) ? '"' + p + '"' : p) + ' ' }
+  // The folder / file dialogs: the server shows them (Windows, a browser tab on macOS / Linux), the pywebview
+  // window its own over the window
+  function askFolder(start, title) {
+    var a = pyApi()
+    if (a && a.pick_folder) return Promise.resolve(a.pick_folder(start || '', title || '')).then(function (p) { return { path: p || null } }, function () { return { path: null } })
+    return api('/api/pick-folder', { start: start, title: title })
+  }
+  function askFiles(start) {
+    var a = pyApi()
+    if (a && a.pick_files) return Promise.resolve(a.pick_files(start || '')).then(function (p) { return { paths: p || [] } }, function () { return { paths: [] } })
+    return api('/api/pick-file', { start: start })
+  }
   function pickFiles() {
-    api('/api/pick-file', { start: chatFolder() }).then(function (r) {
+    askFiles(chatFolder()).then(function (r) {
       ;(r.paths || []).forEach(function (p) { insertAtCursor(mention(p)) })
     })
   }
   function pickFolder() {
-    api('/api/pick-folder', { start: chatFolder(), title: t('addFolder') }).then(function (r) { if (r.path) { setFolder(r.path); newChat() } })
+    askFolder(chatFolder(), t('addFolder')).then(function (r) { if (r.path) { setFolder(r.path); newChat() } })
   }
   function folderMenu(anchor) {
     var list = [state.workspace].concat(knownFolders().filter(function (f) { return !same(f, state.workspace) })).filter(Boolean)
@@ -3371,7 +3413,7 @@
     var shared = el('div', 'pick-row')
     shared.appendChild(el('span', 'path-val', state.workspace || ''))
     shared.appendChild(button(t('change'), function () {
-      api('/api/pick-folder', { start: state.workspace, title: t('sharedFolder') }).then(function (r) {
+      askFolder(state.workspace, t('sharedFolder')).then(function (r) {
         if (!r.path) return
         api('/api/workspace', { path: r.path }).then(function (x) {
           if (!x.workspace) return
@@ -4094,6 +4136,11 @@
   // sidebar it opens as a project), a file is attached as before. Only the app window knows the paths (dropPaths).
   var drops = {}
   function dropPaths(files, done) {
+    var py = pyApi()
+    if (!HOST && py && py.take_drop) {
+      // the pywebview window: its Python side got the real paths of this drop (an older pywebview: none)
+      return Promise.resolve(py.take_drop(files.length)).then(function (p) { done(p && p.length ? p : null) }, function () { done(null) })
+    }
     if (!(HOST && chrome.webview.postMessageWithAdditionalObjects)) return done(null)
     var token = 'd' + Date.now() + Math.random().toString(36).slice(2, 6)
     drops[token] = done

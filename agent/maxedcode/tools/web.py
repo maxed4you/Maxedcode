@@ -19,6 +19,7 @@ from contextlib import suppress
 from ddgs import DDGS
 
 from ..config import FETCH_MAX_CHARS, FETCH_TIMEOUT, NO_FETCH_TIMEOUT
+from ..shelltool import POSIX
 from ..util import clip, save_full
 
 OPEN = {}          # url -> response, so an outside cancel can close it
@@ -185,6 +186,9 @@ async def fetch(url):
             ctype = _not_text(resp.headers)
             if ctype:
                 size = resp.headers.get("Content-Length") or "unknown"
+                if POSIX:
+                    return (f"Error: fetch_url got {ctype} ({size} bytes), not a text page. Download it with bash "
+                            f"(curl -L -o <file> <url>) and inspect the file with py_run.")
                 return (f"Error: fetch_url got {ctype} ({size} bytes), not a text page. Download it with powershell "
                         f"(Invoke-WebRequest -Uri <url> -OutFile <file>) and inspect the file with py_run.")
             data = resp.read(FETCH_MAX_BYTES + 1)

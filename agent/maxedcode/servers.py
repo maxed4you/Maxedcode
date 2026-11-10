@@ -20,6 +20,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -262,6 +263,8 @@ def env_value(name):
     """An environment variable as a newly started program sees it: this process, then the user's registry."""
     if os.environ.get(name):
         return os.environ[name]
+    if os.name != "nt":
+        return _posix_env().get(name, "")
     with suppress(Exception):
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
@@ -394,17 +397,23 @@ def strata_source():
     on_path = shutil.which("strata")
     if on_path:
         places.append(str(Path(on_path).resolve().parent.parent))
-    drives = [f"{d}:\\" for d in "CDEFG" if Path(f"{d}:\\").exists()]
-    places += [str(Path(d, *sub)) for d in drives for sub in (("AI", "Strata"), ("Strata",))]
+    if os.name == "nt":
+        drives = [f"{d}:\\" for d in "CDEFG" if Path(f"{d}:\\").exists()]
+        places += [str(Path(d, *sub)) for d in drives for sub in (("AI", "Strata"), ("Strata",))]
     places += [str(Path.home() / "Strata"), str(Path.home() / ".strata" / "app")]
+    if os.name != "nt":
+        places += [str(Path.home() / "AI" / "Strata"), str(Path.home() / ".local" / "share" / "strata")]
+    launcher = ("strata.cmd",) if os.name == "nt" else ("strata", "strata.sh")
     for p in places:
-        if p and (Path(p) / "strata.py").is_file() and (Path(p) / "bin" / "strata.cmd").is_file():
+        if p and (Path(p) / "strata.py").is_file() and any((Path(p) / "bin" / x).is_file() for x in launcher):
             return Path(p)
     return None
 
 
 def installed():
     """Model servers installed on this PC: [{"kind", "label", "path", "start": [cmd] | None, "how": text}]."""
+    if os.name != "nt":
+        return _installed_posix()
     home, out = Path.home(), []
     strata = shutil.which("strata")
     sp = strata or _local("Programs", "Strata") or _exists(home, ".strata")
@@ -488,14 +497,17 @@ def start(kind, wait=None):
     if not entry or not entry.get("start") or offline():
         return None
     wait = wait or entry.get("wait") or 30
-    if entry.get("console"):
+    if os.name != "nt":
+        flags = 0         # a session of its own (below): it outlives the window or terminal that started it
+    elif entry.get("console"):
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     else:
         flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | \
             getattr(subprocess, "CREATE_NO_WINDOW", 0)
     with suppress(OSError):
         subprocess.Popen(entry["start"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+                         stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True,
+                         **({} if os.name == "nt" else {"start_new_session": True}))
     base = default_base(kind)
     end = time.monotonic() + wait
     while time.monotonic() < end:
@@ -525,7 +537,11 @@ def advice(kind, ctx, want=32768):
 
 
 def set_user_env(values):
-    """Writes user environment variables (HKCU\\Environment) and tells Windows; programs started later see them."""
+    """Writes user environment variables (HKCU\\Environment) and tells Windows; programs started later see them.
+    macOS: launchctl setenv (apps started from now on, Ollama.app too); Linux: ~/.config/environment.d (the
+    systemd user session, from the next login) and this process."""
+    if os.name != "nt":
+        return _set_posix_env(values)
     import ctypes
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
@@ -535,6 +551,101 @@ def set_user_env(values):
         ctypes.windll.user32.SendMessageTimeoutW(ctypes.c_void_p(0xFFFF), 0x1A, ctypes.c_void_p(0),
                                                  ctypes.c_wchar_p("Environment"), 2, 5000,
                                                  ctypes.byref(ctypes.c_size_t()))
+
+
+# ---------- macOS / Linux ----------
+
+POSIX_BIN = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", str(Path.home() / ".local" / "bin"))
+ENV_D = Path.home() / ".config" / "environment.d" / "90-maxedcode.conf"     # Linux: set_user_env writes here
+POSIX_ENV = ("OLLAMA_CONTEXT_LENGTH", "OLLAMA_KEEP_ALIVE", "STRATA_DIR")      # what launchctl getenv is asked
+
+
+def _which(name, *more):
+    """A program on PATH or in the usual bin folders (an app started from the dock does not get the shell's PATH)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in POSIX_BIN:
+        p = Path(d, name)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return next((str(p) for p in more if p and Path(p).is_file()), None)
+
+
+def _app(name):
+    """A macOS application bundle in /Applications or ~/Applications."""
+    return _exists("/Applications", name) or _exists(Path.home(), "Applications", name)
+
+
+def _posix_env():
+    """Variables set_user_env wrote before: launchctl on macOS, the environment.d file on Linux."""
+    out = {}
+    if sys.platform == "darwin":
+        for name in POSIX_ENV:
+            with suppress(Exception):
+                v = subprocess.run(["launchctl", "getenv", name], capture_output=True, text=True, timeout=3).stdout
+                if v.strip():
+                    out[name] = v.strip()
+        return out
+    with suppress(OSError):
+        for line in ENV_D.read_text(encoding="utf-8").splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() and not k.strip().startswith("#"):
+                out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def _set_posix_env(values):
+    values = {str(k): str(v) for k, v in values.items()}
+    os.environ.update(values)
+    if sys.platform == "darwin":
+        for name, value in values.items():
+            with suppress(Exception):
+                subprocess.run(["launchctl", "setenv", name, value], capture_output=True, timeout=5)
+        return
+    current = _posix_env()
+    current.update(values)
+    ENV_D.parent.mkdir(parents=True, exist_ok=True)
+    ENV_D.write_text("# written by maxedcode (model server settings)\n" +
+                     "".join(f"{k}={v}\n" for k, v in current.items()), encoding="utf-8")
+
+
+def _installed_posix():
+    """installed() on macOS and Linux: the same servers in their own places (Homebrew, ~/.lmstudio, .app bundles)."""
+    home, out, mac = Path.home(), [], sys.platform == "darwin"
+    strata = _which("strata")
+    src = strata_source()
+    sp = strata or _exists(home, ".strata")
+    if sp or src:
+        # `strata launch` asks for the model in its own terminal: there is no console to open for it from here
+        out.append({"kind": "strata", "path": str(src or sp), "start": None,
+                    "how": "strata launch (in a terminal; no questions: strata launch --preset \"<name>\" --no-tui)"})
+    lms = _which("lms", home / ".lmstudio" / "bin" / "lms", home / ".cache" / "lm-studio" / "bin" / "lms")
+    lp = (_app("LM Studio.app") if mac else None) or lms or _exists(home, ".lmstudio") or \
+        _exists(home, ".cache", "lm-studio")
+    if lp:
+        out.append({"kind": "lmstudio", "path": str(lp), "start": [str(lms), "server", "start"] if lms else None,
+                    "how": "LM Studio: Developer -> Start Server (or: lms server start)"})
+    oll = _which("ollama", "/Applications/Ollama.app/Contents/Resources/ollama")
+    oapp = _app("Ollama.app") if mac else None
+    if oll or oapp:
+        out.append({"kind": "ollama", "path": str(oapp or oll),
+                    "start": ["open", "-a", str(oapp)] if oapp else [str(oll), "serve"],
+                    "how": "start the Ollama app (or: ollama serve)" if mac else
+                           "systemctl start ollama (or: ollama serve)"})
+    llama = _which("llama-server")
+    if llama:
+        out.append({"kind": "llamacpp", "path": llama, "start": None,
+                    "how": "llama-server -m model.gguf --port 8080 -c 32768"})
+    vllm = _which("vllm")
+    if vllm:
+        out.append({"kind": "vllm", "path": vllm, "start": None, "how": "vllm serve <model> --port 8000"})
+    jan = (_app("Jan.app") if mac else None) or _exists(home, ".config", "Jan") or _exists(home, "jan")
+    if jan:
+        out.append({"kind": "jan", "path": str(jan), "start": None, "how": "Jan: Settings -> Local API Server -> Start"})
+    for x in out:
+        x["label"] = LABELS[x["kind"]]
+    return out
 
 
 def main(argv):
@@ -547,5 +658,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main(sys.argv))

@@ -8,6 +8,9 @@
 // the same arguments: maxedcode, maxedcode app, maxedcode --print "..." ...
 // Right after the setup window nothing more starts by itself: the window has its own "Open maxedcode" button.
 // Files npm downloads carry no "from the internet" mark, so nothing here needs a paid code signature.
+// One package for every system: on Linux / macOS it finds python3 3.10+ (and says how to get it when there is none),
+// installs to $XDG_DATA_HOME/maxedcode (~/.local/share/maxedcode) and runs program/bin/maxed (a shell script);
+// the folder note, the update and the uninstall work the same way.
 'use strict'
 
 const { spawnSync } = require('child_process')
@@ -19,6 +22,8 @@ const pkg = require('../package.json')
 const ROOT = path.resolve(__dirname, '..')
 const HOME = path.join(os.homedir(), '.maxedcode')
 const STAMP = path.join(HOME, 'npm-install.json')
+const WIN = process.platform === 'win32'
+const LOG = WIN ? '%TEMP%\\maxedcode-setup.log' : path.join(os.tmpdir(), 'maxedcode-setup.log')
 
 function fail (msg) {
   console.error('  maxedcode: ' + msg)
@@ -29,8 +34,22 @@ function readStamp () {
   try { return JSON.parse(fs.readFileSync(STAMP, 'utf8')) } catch (e) { return {} }
 }
 
+// Linux / macOS: installer/bootstrap.sh finds a Python 3.10+ whose venv works, else gets uv and its Python 3.12
+// into ~/.maxedcode/uv (no sudo); only when even that fails it prints how to install Python by hand
+function findPosixPython () {
+  const out = path.join(os.tmpdir(), 'maxedcode-npm-python-' + process.pid + '.txt')
+  const r = spawnSync('sh', [path.join(ROOT, 'installer', 'bootstrap.sh')],
+    { stdio: 'inherit', env: Object.assign({}, process.env, { MX_PYFILE: out }) })
+  let py = ''
+  try { py = fs.readFileSync(out, 'utf8').trim() } catch (e) {}
+  fs.rmSync(out, { force: true })
+  if (r.status !== 0 || !py) fail('no Python 3.10+ to install with (see above)')
+  return py
+}
+
 // Python 3.10+ that is not the Microsoft Store one; installer/bootstrap.ps1 installs Python 3.12 when there is none
 function findPython () {
+  if (!WIN) return findPosixPython()
   const out = path.join(os.tmpdir(), 'maxedcode-npm-python-' + process.pid + '.txt')
   const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
     path.join(ROOT, 'installer', 'bootstrap.ps1')], { stdio: 'inherit', env: Object.assign({}, process.env, { MX_PYFILE: out }) })
@@ -42,6 +61,14 @@ function findPython () {
 }
 
 const bat = d => path.join(d, 'program', 'bin', 'maxed.bat')
+// the launcher of an install: maxed.bat on Windows, the shell script maxed on Linux / macOS
+const launcher = d => WIN ? bat(d) : path.join(d, 'program', 'bin', 'maxed')
+
+// the default install folder (install.py DEFAULT_DIR)
+function defaultDir () {
+  if (WIN) return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'maxedcode')
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'maxedcode')
+}
 
 // "1.2.10" -> [1, 2, 10]; newer(a, b): a is above b
 const parse = v => (/^v?(\d+(\.\d+)*)$/.exec(String(v || '').trim()) || [null, ''])[1].split('.').filter(Boolean).map(Number)
@@ -76,7 +103,7 @@ function install (dir, wizard) {
   let used = ''
   try { used = fs.readFileSync(dirFile, 'utf8').trim() } catch (e) {}
   fs.rmSync(dirFile, { force: true })
-  if (r.status !== 0) fail('setup stopped (code ' + r.status + '); the log: %TEMP%\\maxedcode-setup.log')
+  if (r.status !== 0) fail('setup stopped (code ' + r.status + '); the log: ' + LOG)
   if (!used) return ''
   fs.mkdirSync(HOME, { recursive: true })
   fs.writeFileSync(STAMP, JSON.stringify({ version: pkg.version, dir: used }, null, 2))
@@ -98,6 +125,12 @@ function uninstall (dir, rest) {
 }
 
 function installed (dir) {
+  if (!WIN) {
+    return console.log('\n  maxedcode is installed in ' + dir +
+      '\n    app:  maxedcode app (maxed app in a new terminal)' + (process.platform === 'darwin' ? ', maxedcode in Launchpad' : '') +
+      '\n    CLI:  maxedcode (maxed in a new terminal)' +
+      '\n    model server, folder again: maxedcode setup\n')
+  }
   console.log('\n  maxedcode is installed in ' + dir +
     '\n    app:  the "maxedcode app" shortcut, or: maxedcode app' +
     '\n    CLI:  the "maxedcode CLI" shortcut, or: maxedcode (maxed in a new terminal)' +
@@ -111,29 +144,32 @@ function quote (a) {
 }
 
 function main () {
-  if (process.platform !== 'win32') fail('maxedcode runs on Windows 10 / 11 for now.')
+  if (!['win32', 'linux', 'darwin'].includes(process.platform)) fail('maxedcode runs on Windows, Linux and macOS.')
   let args = process.argv.slice(2)
   if (args[0] === '--npm-version') return console.log(pkg.version)
   const stamp = readStamp()
-  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-  let dir = process.env.MAXEDCODE_DIR || stamp.dir || path.join(local, 'Programs', 'maxedcode')
+  let dir = process.env.MAXEDCODE_DIR || stamp.dir || defaultDir()
   if (args[0] === 'uninstall') return uninstall(dir, args.slice(1))
   const setup = args[0] === 'setup'                // maxedcode setup: the setup window again
   if (setup) args = args.slice(1)
-  if (setup || !stamp.version || !fs.existsSync(bat(dir))) {
+  if (setup || !stamp.version || !fs.existsSync(launcher(dir))) {
     // the first run of this package (or its install is gone): the setup window, never a silent install
     const used = install(dir, true)
     if (used) {
       dir = used
       if (!args.length) return installed(dir)
-    } else if (!fs.existsSync(bat(dir))) {
+    } else if (!fs.existsSync(launcher(dir))) {
       fail('nothing was installed (the setup window was closed); run maxedcode again to install it')
     }
   } else if (newer(pkg.version, installedVersion(dir))) {
     dir = install(dir, false) || dir
   }
-  const maxed = bat(dir)
-  if (!fs.existsSync(maxed)) fail('setup did not create ' + maxed + '; the log: %TEMP%\\maxedcode-setup.log')
+  const maxed = launcher(dir)
+  if (!fs.existsSync(maxed)) fail('setup did not create ' + maxed + '; the log: ' + LOG)
+  if (!WIN) {                     // a shell script: the arguments go as they are, no cmd quoting
+    const r = spawnSync(maxed, args, { stdio: 'inherit' })
+    process.exit(r.status === null ? 1 : r.status)
+  }
   const line = '"' + [quote(maxed)].concat(args.map(quote)).join(' ') + '"'
   const r = spawnSync('cmd.exe', ['/d', '/s', '/c', line], { stdio: 'inherit', windowsVerbatimArguments: true })
   process.exit(r.status === null ? 1 : r.status)

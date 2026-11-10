@@ -17,6 +17,11 @@ MAX_FILES = 5000           # a bigger folder (the home folder, a drive root) is 
 MAX_TEXT = 256_000         # bytes; a larger file is reported by size only
 MAX_CACHE = 32_000_000     # total bytes of remembered text
 _ABS_PATH = re.compile(r"""(?:"|')([A-Za-z]:[\\/][^"'\r\n]+)(?:"|')|([A-Za-z]:[\\/][^\s"'<>|*?;,()]+)""")
+# macOS / Linux: /abs/path or ~/path. A bare path must start the text or follow a space, "=" or "(", so
+# "a/b" or the "/" of an option is not taken for one.
+_POSIX_PATH = re.compile(r"""(?:"|')((?:~|/)[^"'\r\n]*/[^"'\r\n]+)(?:"|')|(?:^|(?<=[\s=(]))((?:~/|/)[^\s"'<>|*?;,()]+)""")
+if os.name != "nt":
+    _ABS_PATH = _POSIX_PATH
 
 
 def named_files(text):
@@ -24,6 +29,8 @@ def named_files(text):
     out = []
     for m in _ABS_PATH.finditer(text or ""):
         p = (m.group(1) or m.group(2)).rstrip(".\\/")
+        if os.name != "nt":
+            p = os.path.expanduser(p)
         if p and p not in out:
             out.append(p)
     return out[:20]
@@ -31,8 +38,10 @@ def named_files(text):
 
 def watched_files(name, args):
     """None when the tool cannot change files or draws its own diff; else the absolute files it names."""
-    from .tools import ps_readonly
-    if name == "powershell" and not args.get("run_in_background") and not ps_readonly(args.get("command") or ""):
+    from . import shelltool
+    from .tools import ps_readonly, sh_readonly
+    readonly = sh_readonly if shelltool.POSIX else ps_readonly
+    if shelltool.is_shell(name) and not args.get("run_in_background") and not readonly(args.get("command") or ""):
         return named_files(args.get("command"))
     if name == "py_run":
         return named_files(args.get("code"))

@@ -18,6 +18,7 @@ from maxedcode.tools import BUILTIN, last_assistant_has_tool_calls, parallel_saf
 from maxedcode.loopguard import LoopGuard
 from maxedcode.tools.todo import TaskProgressGuard
 from maxedcode import permissions
+from maxedcode.shelltool import NAME as SHELL  # noqa: E402  (powershell on Windows, bash on Linux/macOS)
 
 
 def load_headless_with_optional_dependency_stubs():
@@ -232,7 +233,7 @@ class LoopGuardSearchTests(unittest.TestCase):
         self.assertIn("Stop searching", blocked)
 
     def test_deleting_git_head_ref_requires_confirmation(self):
-        why = permissions.dangerous("powershell", "git update-ref -d HEAD")
+        why = permissions.dangerous(SHELL, "git update-ref -d HEAD")
         self.assertEqual(why, "deletes a Git reference")
 
 class AnyLanguageTests(unittest.TestCase):

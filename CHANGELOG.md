@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.0
+
+**maxedcode now runs on Linux and macOS too.** One package for all three systems: `npm install -g maxedcode`
+finds out which one it is on. Or one line in a terminal:
+`curl -fsSL https://raw.githubusercontent.com/maxed4you/Maxedcode/main/install.sh | sh`.
+
+### Linux / macOS
+- **Setup needs nothing installed first and never asks for sudo.** It uses your Python 3.10+ if it can make a
+  venv, and otherwise fetches [uv](https://github.com/astral-sh/uv) and its own Python 3.12, all in your home folder.
+- You choose the install folder (default `~/.local/share/maxedcode`). The program gets its own Python environment;
+  `maxed` works in any new terminal (setup adds `~/.local/bin` to PATH if needed, and removes it on uninstall).
+- **The app:** in its own window (pywebview), or in your browser when no window can be opened. It is in the app
+  menu on Linux and in `~/Applications/maxedcode.app` on macOS; `maxed app` from a terminal.
+- **The agent runs commands in bash** (the model sees a `bash` tool instead of `powershell`), with the same
+  safety checks for dangerous commands and protected folders (`~/.ssh`, `/etc`, `/usr`, `/System` ...).
+  Rules, hooks and agent definitions written for Windows (`powershell(...)`) apply to bash.
+- The terminal in the app, the browser extension bridge (Chrome, Edge, Brave, Chromium, Vivaldi, Yandex), API keys
+  in the system keyring (or a file only you can read), LM Studio / Ollama / Jan / llama.cpp found where they install.
+- Auto-update and `maxed uninstall` work the same as on Windows.
+
+### Windows
+- Nothing changes in how it works: the same tools, prompt and setup.
+
 ## 1.0.2
 
 ### Setup

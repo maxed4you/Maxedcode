@@ -1,4 +1,5 @@
-# Every push to main and every pull request: the test suites on Windows.
+# Every push to main and every pull request: the test suites on Windows, Linux and macOS, and a real install
+# with install.sh on Linux and macOS (the venv, program/bin/maxed, ~/.local/bin/maxed, uninstall).
 name: tests
 
 on:
@@ -8,7 +9,11 @@ on:
 
 jobs:
   tests:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +23,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -q "openai>=2.0" "ddgs>=3.0" "textual>=2.0" "mcp>=2" pillow rich pytest
       - name: Run the test suites
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           MAXEDCODE_OFFLINE: "1"
@@ -25,3 +31,79 @@ jobs:
         run: |
           cd agent
           python run_all_tests.py --serial
+      - name: Run the test suites (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MAXEDCODE_OFFLINE: "1"
+          PYTHONUTF8: "1"
+        run: |
+          cd agent
+          python run_all_tests.py --serial
+      - name: The npm launcher parses
+        shell: bash
+        run: |
+          node --check bin/maxedcode.js
+          node bin/maxedcode.js --npm-version
+
+  posix-install:
+    # install.sh from this checkout into a temporary home: the venv and its packages, the launcher, the link,
+    # the menu entries / maxedcode.app, README.txt, maxed --update (offline: nothing to do), maxed uninstall
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install.sh, then the installed launcher
+        shell: bash
+        env:
+          MAXEDCODE_OFFLINE: "1"
+        run: |
+          set -eux
+          export HOME="$RUNNER_TEMP/home" XDG_DATA_HOME="$RUNNER_TEMP/home/.local/share"
+          mkdir -p "$HOME"
+          dir="$RUNNER_TEMP/mx"
+          MAXEDCODE_SRC="$GITHUB_WORKSPACE" MAXEDCODE_YES=1 MAXEDCODE_ARGS="--dir $dir --base-url 127.0.0.1:8080" sh install.sh
+          test -x "$dir/program/bin/maxed"
+          test -f "$dir/README.txt"
+          "$dir/program/.venv/bin/python" -c "import openai, ddgs, textual, rich, PIL, mcp"
+          test -L "$HOME/.local/bin/maxed" || test -x "$HOME/.local/bin/maxed"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            test -x "$HOME/Applications/maxedcode.app/Contents/MacOS/maxedcode"
+            plutil -lint "$HOME/Applications/maxedcode.app/Contents/Info.plist"
+          else
+            test -f "$XDG_DATA_HOME/applications/maxedcode.desktop"
+            grep -q "^Exec=.*maxed\"\? app$" "$XDG_DATA_HOME/applications/maxedcode.desktop"
+          fi
+          grep -q "added by maxedcode setup" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" 2>/dev/null
+          "$HOME/.local/bin/maxed" --update
+          # a real turn of the installed agent against a stub model: the bash tool runs and its output comes back
+          python "$GITHUB_WORKSPACE/.github/ci/stub_llm.py" 18080 "$RUNNER_TEMP/stub.jsonl" &
+          stub=$!
+          sleep 2
+          mkdir -p "$RUNNER_TEMP/proj"
+          out=$(cd "$RUNNER_TEMP/proj" && "$HOME/.local/bin/maxed" --print "run a command" --base-url http://127.0.0.1:18080/v1 --model stub-model --yes --max-turns 3)
+          echo "$out"
+          echo "$out" | grep -q "hello-from-bash"
+          grep -q '"bash"' "$RUNNER_TEMP/stub.jsonl"
+          if grep -q '"powershell"' "$RUNNER_TEMP/stub.jsonl"; then exit 1; fi
+          kill $stub || true
+          # the app window's server: maxed app --no-window prints the page address; the page and its API answer
+          app=$("$dir/program/bin/maxed" app --no-window || true)
+          echo "$app"
+          url=$(echo "$app" | grep -o 'http://[^ ]*' | head -1)
+          if [ -z "$url" ]; then cat "$HOME"/.maxedcode-app/server-*.log* || true; exit 1; fi
+          curl -fsS -c "$RUNNER_TEMP/jar" -b "$RUNNER_TEMP/jar" -L "$url" | grep -q "<title>maxedcode"
+          curl -fsS -b "$RUNNER_TEMP/jar" "${url%%\?*}api/ping" | grep -q running
+          "$dir/program/bin/maxed" uninstall --yes
+          test ! -e "$dir"
+          test ! -e "$HOME/.local/bin/maxed"
+          if grep -q "added by maxedcode setup" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" 2>/dev/null; then exit 1; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then test ! -e "$HOME/Applications/maxedcode.app"
+          else test ! -e "$XDG_DATA_HOME/applications/maxedcode.desktop"; fi

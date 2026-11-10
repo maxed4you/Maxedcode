@@ -18,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from ..shelltool import NAME as SHELL_TOOL
+
 from .catalog import builtin_catalog
 from ..config import CODE_MODE_TIMEOUT, TOOL_OUTPUT_LIMIT, output_limit
 from ..util import normalize_tool_output
@@ -398,7 +400,7 @@ def _validate_ast(tree: ast.AsyncFunctionDef):
     if found:
         raise ValueError(f"{', '.join(found)} unavailable in the confined interpreter. code_mode only "
                          "orchestrates tool calls; to run Python code, a test or a subprocess, use py_run "
-                         "(or powershell: python <file>.py)")
+                         f"(or {SHELL_TOOL}: python <file>.py)")
     for node in nodes:
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             raise ValueError("private/dunder attributes are unavailable")

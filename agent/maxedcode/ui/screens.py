@@ -5,6 +5,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 import asyncio
+import os
 from textual.screen import ModalScreen
 from textual.widgets import Input, TextArea, Button, Checkbox
 from textual.widgets import Static
@@ -280,7 +281,9 @@ class CloudSetupScreen(ModalScreen):
                          id="ptitle", classes="dialog-title")
             yield Static(Text(
                 "Only the task you approve is sent — never the conversation, files, logs, MCP data or environment. "
-                "The key is stored with Windows DPAPI (OS keyring elsewhere).", style="#9aa0a8"), id="cloud-privacy")
+                + ("The key is stored with Windows DPAPI (OS keyring elsewhere)." if os.name == "nt" else
+                   "The key is stored in the OS keyring, or in a file only you can read."),
+                style="#9aa0a8"), id="cloud-privacy")
             yield Static(Text.assemble(("API base URL", "bold #c9d1d9"), ("  any OpenAI-compatible HTTPS endpoint", "grey50")), classes="dialog-label")
             if self.add:
                 yield Static(Text("  or a provider: " + ", ".join(cloud_providers()) + "; empty = found from the key",

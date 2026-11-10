@@ -2,6 +2,8 @@
 import re
 import unicodedata
 
+from ..shelltool import NAME as SHELL_TOOL
+
 STATUS = ("pending", "in_progress", "done")
 MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 # Spellings other agents use (Claude Code / DeepSeek Harness: "completed"): accepted instead of a failed call.
@@ -95,7 +97,7 @@ _TEST_COMMAND = re.compile(
 
 def is_verification_tool(name, args):
     """Whether a tool call runs a likely test/lint/type/syntax verification."""
-    if name == "powershell":
+    if name == SHELL_TOOL:
         return bool(_TEST_COMMAND.search(str(args.get("command") or "")))
     if name == "py_run":
         code = str(args.get("code") or "")
@@ -113,7 +115,7 @@ class TaskProgressGuard:
 
     RESEARCH_TOOLS = {"read_file", "grep", "py_source", "web_search", "fetch_url", "subagent"}
     EDIT_TOOLS = {"edit_file", "write_file", "patch", "apply_diff"}
-    RUN_TOOLS = {"powershell", "py_run"}
+    RUN_TOOLS = {SHELL_TOOL, "py_run"}
     # Never blocked and never counted: they are not work, they are interaction or state.
     EXEMPT = {"todo_write", "ask_user", "finish", "exit_plan_mode", "skill", "remember",
               "tool_search", "bg_output", "bg_kill"}
@@ -145,7 +147,7 @@ class TaskProgressGuard:
         """Whether a call is real work (research, a file change or a command), not just interaction."""
         if name in self.RESEARCH_TOOLS or name in self.EDIT_TOOLS or name in self.RUN_TOOLS:
             return True
-        return name == "powershell" and bool(_RESEARCH_PS.search(str(args.get("command") or "").strip()))
+        return name == SHELL_TOOL and bool(_RESEARCH_PS.search(str(args.get("command") or "").strip()))
 
     def blocked_reason(self, name, args, tasks):
         if name == "todo_write" or not self.strict:
@@ -178,7 +180,7 @@ class TaskProgressGuard:
         if not self.edits_since_update:
             if name in self.RESEARCH_TOOLS:
                 self.research_since_update = True
-            elif name == "powershell" and _RESEARCH_PS.search(str(args.get("command") or "").strip()):
+            elif name == SHELL_TOOL and _RESEARCH_PS.search(str(args.get("command") or "").strip()):
                 self.research_since_update = True
         if name in self.EDIT_TOOLS:
             self.edits_since_update = True

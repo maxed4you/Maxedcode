@@ -238,10 +238,11 @@ class TextToolCallTests(unittest.TestCase):
 class ToolNameAliasTests(unittest.TestCase):
     def test_names_from_other_agents_map_to_ours(self):
         from maxedcode.tool_validation import canonical_tool_name
-        specs = [spec("powershell", {"command": {"type": "string"}}, ["command"]),
+        from maxedcode.shelltool import NAME as SHELL   # powershell on Windows, bash on Linux/macOS
+        specs = [spec(SHELL, {"command": {"type": "string"}}, ["command"]),
                  spec("grep", {"pattern": {"type": "string"}}, ["pattern"])]
-        self.assertEqual(canonical_tool_name("run_command", specs), "powershell")
-        self.assertEqual(canonical_tool_name("Bash", specs), "powershell")
+        self.assertEqual(canonical_tool_name("run_command", specs), SHELL)
+        self.assertEqual(canonical_tool_name("Bash", specs), SHELL)
         self.assertEqual(canonical_tool_name("grep_search", specs), "grep")
         self.assertEqual(canonical_tool_name("read", specs), "read")        # target not offered: no guess
         self.assertEqual(canonical_tool_name("weird_tool", specs), "weird_tool")

@@ -173,6 +173,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Plan mode: only look", delegation)
         self.assertIn("not instructions", delegation)
 
+    @unittest.skipUnless(os.name == "nt", "the registry: Windows only (test_posix_platform covers macOS / Linux)")
     def test_register_points_every_browser_at_one_manifest(self):
         keys = {}
 

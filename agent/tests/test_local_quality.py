@@ -1,5 +1,6 @@
 """Regressions for local-model editing, repo maps, and model profiles."""
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,7 +79,8 @@ class LocalQualityTests(unittest.TestCase):
         (self.root / "Strata" / "START-HERE.bat").write_text("@echo off\n", encoding="utf-8")
         (self.root / "run.cmd").write_text("start strata\n", encoding="utf-8")
         text = fs.tool_read(str(self.root))
-        for name in ("Models\\", "Strata\\", "packs\\", "run.cmd", "Strata\\START-HERE.bat"):
+        for name in ("Models" + os.sep, "Strata" + os.sep, "packs" + os.sep, "run.cmd",
+                     os.path.join("Strata", "START-HERE.bat")):
             self.assertIn(name, text)
         self.assertIn("start strata", text)
         self.assertNotIn("mod1.py", text)
@@ -90,6 +92,7 @@ class LocalQualityTests(unittest.TestCase):
         self.assertIn("binary file", text)
         self.assertNotIn("garbage", text)
 
+    @unittest.skipUnless(os.name == "nt", "Windows default protected paths (AppData)")
     def test_protected_path_denial_says_protected_not_deny_rule(self):
         from maxedcode import permissions
         msg = permissions.deny_message("read_file", r"C:\Users\me\AppData\Roaming\app\config.json")
