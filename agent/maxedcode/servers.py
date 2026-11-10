@@ -322,7 +322,23 @@ def same_model(a, b):
     return bool(a) and (a == b or a + ":latest" == b or a == b + ":latest")
 
 
+# Below this the agent cannot work at all: its instructions and tools alone take about 9-10k tokens (LM Studio
+# answered such requests with a bare "Error code: 400").
+MIN_WINDOW = 16384
+
+
 def pick_model(want, on, kind=""):
+    """_pick_model, plus a plain warning when the chosen model is loaded with a window too small to work in."""
+    model, window, note = _pick_model(want, on, kind)
+    if model and window and window < MIN_WINDOW:
+        label = LABELS.get(kind) or "the server"
+        small = (f"{model} is loaded with a {window}-token context, too small for maxedcode (it needs at least "
+                 f"{MIN_WINDOW}): load it again in {label} with a larger context")
+        note = f"{note}; {small}" if note else small
+    return model, window, note
+
+
+def _pick_model(want, on, kind=""):
     """The model a request names on a server that loads any model it is asked for (JIT_KINDS).
 
     want: the configured id or None; on: loaded_models(). -> (model or None, its loaded window or None, note).

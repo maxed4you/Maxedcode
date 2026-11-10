@@ -48,6 +48,14 @@ class PickModelTests(unittest.TestCase):
         on = [("other", 8192), (CONFIGURED, 32768)]
         self.assertEqual(servers.pick_model(CONFIGURED, on, "lmstudio"), (CONFIGURED, 32768, ""))
 
+    def test_a_window_too_small_to_work_in_is_said_plainly(self):
+        # live LM Studio: maxedcode's instructions and tools are ~9.3k tokens; at 8192 the server only said "400"
+        model, ctx, note = servers.pick_model(CONFIGURED, [(CONFIGURED, 8192)], "lmstudio")
+        self.assertEqual((model, ctx), (CONFIGURED, 8192))
+        self.assertIn("8192", note)
+        self.assertIn(str(servers.MIN_WINDOW), note)
+        self.assertEqual(servers.pick_model(CONFIGURED, [(CONFIGURED, 16384)], "lmstudio")[2], "")
+
     def test_another_one_loaded_is_used_and_said(self):
         model, ctx, note = servers.pick_model(CONFIGURED, [("qwen3-8b", 8192)], "lmstudio")
         self.assertEqual((model, ctx), ("qwen3-8b", 8192))
@@ -72,7 +80,7 @@ class PickModelTests(unittest.TestCase):
         self.assertEqual(servers.pick_model(CONFIGURED, None, "lmstudio"), (CONFIGURED, None, ""))
 
     def test_ollama_latest_tag_is_the_same_model(self):
-        self.assertEqual(servers.pick_model("qwen3", [("qwen3:latest", 8192)], "ollama"), ("qwen3:latest", 8192, ""))
+        self.assertEqual(servers.pick_model("qwen3", [("qwen3:latest", 32768)], "ollama"), ("qwen3:latest", 32768, ""))
         self.assertFalse(servers.same_model("qwen3", "qwen3:8b"))
 
 
