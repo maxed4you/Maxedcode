@@ -45,8 +45,13 @@ jobs:
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1
-          # the program alone (installer/app: no tests, no docs) for install.ps1, as opencode ships a built package
-          Compress-Archive -Path installer/app/* -DestinationPath installer/maxedcode.zip -Force
+          # the program alone (installer/app: no tests, no docs) for install.ps1, install.sh and auto-update, as
+          # opencode ships a built package; with what Linux / macOS need and Maxedcode_setup.exe does not: the png
+          # icon (menu entries, maxedcode.app) and bootstrap.sh. Packed with Python's zipfile, not Compress-Archive:
+          # forward slashes in the names, 755 for *.sh (installer/zip_program.py); Windows unpacks it the same way
+          Copy-Item desktop/maxedcode.png installer/app/desktop/maxedcode.png
+          Copy-Item installer/bootstrap.sh installer/app/bootstrap.sh
+          python installer/zip_program.py installer/app installer/maxedcode.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Maxedcode_setup
@@ -97,6 +102,8 @@ jobs:
         with:
           name: Maxedcode_setup
           path: installer
+      - name: The Linux / macOS setup script (the same as install.sh)
+        run: cp install.sh installer/maxedcode-setup.sh
       - name: Release notes (this version's part of CHANGELOG.md + how to install)
         shell: pwsh
         run: |
@@ -115,4 +122,5 @@ jobs:
           files: |
             installer/Maxedcode_setup.zip
             installer/maxedcode.zip
+            installer/maxedcode-setup.sh
           generate_release_notes: true

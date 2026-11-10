@@ -178,6 +178,47 @@ class UpdateTests(unittest.TestCase):
         self.assertIsNone(update.apply(say=lambda t: None))
         self.assertEqual(update.version_of(self.program), VERSION)
 
+    def test_a_zip_made_on_windows_unpacks_into_folders(self):
+        """Compress-Archive of an older PowerShell names entries with backslashes: Linux / macOS make folders."""
+        z = self.root / "backslash.zip"
+        with zipfile.ZipFile(z, "w") as f:
+            f.writestr("install.py", "")
+            f.writestr("maxedcode\\version.py", 'VERSION = "99.0.0"')
+        src = update.unpack(z, self.root / "out")
+        self.assertEqual(update.version_of(src), "99.0.0")
+        with zipfile.ZipFile(z, "w") as f:
+            f.writestr("..\\escape.txt", "")
+        with self.assertRaises(ValueError):
+            update.unpack(z, self.root / "out2")
+
+    def test_the_release_zip_builder_keeps_scripts_runnable(self):
+        """installer/zip_program.py (release.yml): forward slashes, LF and 755 for *.sh; unpack reads it back."""
+        builder = REPO / "installer" / "zip_program.py"
+        if not builder.exists():
+            self.skipTest("no installer/zip_program.py in this copy")
+        app = self.root / "app"
+        (app / "maxedcode").mkdir(parents=True)
+        (app / "install.py").write_text("")
+        (app / "bootstrap.sh").write_bytes(b"#!/bin/sh\r\necho hi\r\n")
+        (app / "maxedcode" / "version.py").write_text('VERSION = "99.0.0"')
+        z = self.root / "maxedcode.zip"
+        subprocess.run([sys.executable, str(builder), str(app), str(z)], check=True)
+        with zipfile.ZipFile(z) as f:
+            names = {i.filename: i for i in f.infolist()}
+        self.assertEqual(sorted(names), ["bootstrap.sh", "install.py", "maxedcode/version.py"])
+        self.assertEqual((names["bootstrap.sh"].external_attr >> 16) & 0o777, 0o755)
+        src = update.unpack(z, self.root / "out")
+        self.assertEqual(update.version_of(src), "99.0.0")
+        self.assertEqual((src / "bootstrap.sh").read_bytes(), b"#!/bin/sh\necho hi\n")
+        if os.name != "nt":
+            self.assertTrue(os.access(src / "bootstrap.sh", os.X_OK))
+
+    def test_process_check_works_on_this_system(self):
+        self.assertTrue(update._alive(os.getpid()))
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        self.assertFalse(update._alive(p.pid))
+
     def test_a_stale_lock_does_not_block_forever(self):
         update.DIR.mkdir(parents=True, exist_ok=True)
         lock = update.DIR / "check.lock"

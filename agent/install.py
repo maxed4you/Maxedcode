@@ -10,6 +10,12 @@ and PATH (maxed from any folder).
 The model server does not have to be running during setup: the address is saved and checked when the agent starts.
 The server address can be typed in any form: 192.168.0.10, 192.168.0.10:1234, http://pc-name:8080,
 https://api.example.com/v1, .../v1/chat/completions; the installer finds the port and /v1 itself.
+
+Linux / macOS: the program goes to <dir>/program (default ~/.local/share/maxedcode) with its own virtual
+environment program/.venv (PEP 668: the system Python takes no packages), the launcher program/bin/maxed (a shell
+script, linked as ~/.local/bin/maxed), README.txt, and the app menu entries (Linux: ~/.local/share/applications) or
+~/Applications/maxedcode.app (macOS). Everything Windows-only (the exe, WebView2, .lnk shortcuts, the registry PATH,
+.bat launchers, the old ~/.maxedcode layout) is skipped there.
 """
 import argparse
 import concurrent.futures as cf
@@ -17,10 +23,13 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +41,15 @@ try:
     import msvcrt
 except ImportError:
     msvcrt = None
+try:                        # Linux / macOS: arrow keys in a raw terminal
+    import select as _select
+    import termios
+    import tty
+except ImportError:
+    termios = None
+
+WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -39,7 +57,9 @@ from maxedcode import servers  # noqa: E402  (stdlib only: works before the pack
 
 # the program: <root>\program; root has only the two launchers and README.txt. The data (sessions, memory,
 # settings.json) is in DATA_DIR, as always: an update or another install folder never touches it.
-DEFAULT_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Programs" / "maxedcode"
+# Linux / macOS: $XDG_DATA_HOME/maxedcode (~/.local/share/maxedcode)
+DEFAULT_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Programs" / "maxedcode" \
+    if WINDOWS else Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "maxedcode"
 DATA_DIR = Path.home() / ".maxedcode"
 LEGACY_DIR = DATA_DIR             # older setups put the program here too, next to the data
 # the app window's files: next to this file in an install / the setup zip, ../desktop in the git repository
@@ -69,7 +89,8 @@ ARGS = argparse.Namespace(yes=False)
 # vt: arrow-key menus; sink: the setup window's log (install_gui); errors: what went wrong, for the last screen
 UI = {"vt": False, "sink": None, "errors": []}
 # everything setup says also goes here: the first thing to ask for when it fails on another PC
-LOG = Path(os.environ.get("TEMP") or os.environ.get("TMP") or Path.home()) / "maxedcode-setup.log"
+LOG = (Path(os.environ.get("TEMP") or os.environ.get("TMP") or Path.home()) if WINDOWS else
+       Path(tempfile.gettempdir())) / "maxedcode-setup.log"
 ESC = "\x1b["
 PAGE = 10   # rows of a long list shown at once
 
@@ -77,8 +98,12 @@ PAGE = 10   # rows of a long list shown at once
 # ---------- console UI: arrow-key menus; numbered questions when the console cannot do that ----------
 
 def vt_on():
-    """Interactive Windows console with ANSI escapes (Windows 10+) -> True: arrow-key menus."""
-    if not (msvcrt and sys.stdin.isatty() and sys.stdout.isatty()):
+    """Interactive Windows console with ANSI escapes (Windows 10+) -> True: arrow-key menus. Linux / macOS: a real
+    terminal (not TERM=dumb)."""
+    if not msvcrt:
+        return bool(termios and sys.stdin.isatty() and sys.stdout.isatty() and
+                    os.environ.get("TERM", "dumb") != "dumb")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     with suppress(Exception):
         import ctypes
@@ -129,8 +154,50 @@ def fit(*parts):
 KEYS = {"H": "up", "P": "down", "K": "left", "M": "right", "G": "home", "O": "end", "I": "pgup", "Q": "pgdn"}
 
 
+# Linux / macOS: what follows ESC for a special key (xterm, VTE, Terminal.app, iTerm2)
+POSIX_KEYS = {"[A": "up", "[B": "down", "[D": "left", "[C": "right", "[H": "home", "[F": "end", "OH": "home",
+              "OF": "end", "[1~": "home", "[4~": "end", "[5~": "pgup", "[6~": "pgdn", "OA": "up", "OB": "down",
+              "OC": "right", "OD": "left", "[Z": "up"}
+
+
+def _read_char(fd):
+    """One UTF-8 character from a raw terminal."""
+    b = os.read(fd, 1)
+    if not b:
+        raise EOFError
+    n = 1 if b[0] < 0xC0 else 2 if b[0] < 0xE0 else 3 if b[0] < 0xF0 else 4
+    while len(b) < n:
+        b += os.read(fd, 1)
+    return b.decode("utf-8", "replace")
+
+
+def posix_key():
+    """key() for Linux / macOS: the terminal in raw mode for one key press (put back right after)."""
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = _read_char(fd)
+        if ch == "\x1b":
+            seq = ""
+            while len(seq) < 4 and _select.select([fd], [], [], 0.05)[0]:
+                seq += _read_char(fd)
+                if seq[-1].isalpha() or seq[-1] == "~":
+                    break
+            if seq:
+                return POSIX_KEYS.get(seq, "")
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    if ch == "\x03":
+        raise KeyboardInterrupt
+    return {"\r": "enter", "\n": "enter", "\x1b": "esc", "\x7f": "back", "\x08": "back", " ": "space",
+            "\t": "down"}.get(ch, ch)
+
+
 def key():
     """One key press: 'up', 'down', 'enter', 'esc', 'space', 'back', ... or the typed character."""
+    if not msvcrt:
+        return posix_key()
     ch = msvcrt.getwch()
     if ch in ("\x00", "\xe0"):
         return KEYS.get(msvcrt.getwch(), "")
@@ -154,6 +221,11 @@ def numbered(q, rows, default, back):
         if same:
             return same[0]
         print(f"  enter a number from 1 to {len(rows)}")
+
+
+def lines_up(n):
+    """The cursor to the start of the line n lines up (CPL on Windows; CUU + CR works in every POSIX terminal)."""
+    return f"{ESC}{n}F" if WINDOWS else f"\r{ESC}{n}A"
 
 
 def select(q, items, default=0, back=False, marks=None, hot=None):
@@ -194,7 +266,7 @@ def select(q, items, default=0, back=False, marks=None, hot=None):
                 lines.append(fit(("    nothing matches; Backspace to edit the filter", "33")))
             elif len(view) > PAGE:
                 lines.append(fit((f"    {pos + 1} of {len(view)}", "90")))
-            out.write((f"{ESC}{drawn}F" if drawn else "") + f"{ESC}J" + "\n".join(lines) + "\n")
+            out.write((lines_up(drawn) if drawn else "") + f"{ESC}J" + "\n".join(lines) + "\n")
             out.flush()
             drawn = len(lines)
             k = key()
@@ -223,7 +295,7 @@ def select(q, items, default=0, back=False, marks=None, hot=None):
                 cur = int(k) - 1
                 break
     finally:
-        out.write((f"{ESC}{drawn}F" if drawn else "") + f"{ESC}J{ESC}?25h")
+        out.write((lines_up(drawn) if drawn else "") + f"{ESC}J{ESC}?25h")
         out.flush()
     if marks is not None:
         picked = ", ".join(rows[i][0] for i, m in enumerate(marks) if m) or "nothing"
@@ -751,7 +823,8 @@ def choose_dir():
                               ("Another folder ...", "")], 0)
     path = str(first) if n == 0 else ask("Folder", str(first))
     root = Path(path).expanduser().resolve()
-    say(f"the program goes to {root / PROGRAM}; maxedcode app.bat and maxedcode CLI.bat to {root}")
+    say(f"the program goes to {root / PROGRAM}; maxedcode app.bat and maxedcode CLI.bat to {root}" if WINDOWS else
+        f"the program goes to {root / PROGRAM} (its launcher: {root / PROGRAM / 'bin' / 'maxed'}); README.txt to {root}")
     return root
 
 
@@ -824,7 +897,10 @@ def app_window(dest, shortcuts):
     """The app window: maxedcode.exe, built and signed on this PC by desktop/app/build-exe.ps1 (Smart App Control
     blocks an unsigned exe; the script checks that this one runs). When that fails, desktop/app/maxedcode.ps1, which
     compiles the same C# in memory at start. Setup checks the window and, if asked, creates the "maxedcode app"
-    shortcuts on the desktop and in the Start menu. The window starts the agent with the Python of this install."""
+    shortcuts on the desktop and in the Start menu. The window starts the agent with the Python of this install.
+    Linux / macOS: nothing to build (maxed app opens the window itself; its menu entries come from shortcut())."""
+    if not WINDOWS:
+        return
     app = dest / "desktop" / "app"
     if not (app / "maxedcode.cs").exists():
         return
@@ -849,9 +925,9 @@ def app_window(dest, shortcuts):
         say(f"app window not ready: {(r.stderr or r.stdout).strip()[:300]}", "warn")
 
 
-def run_logged(cmd):
+def run_logged(cmd, env=None):
     """Runs a command, its output line by line into say() (console, setup window and log) -> exit code."""
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    env = {**(env or os.environ), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", env=env)
@@ -864,22 +940,36 @@ def run_logged(cmd):
     return p.wait()
 
 
-def install_deps():
-    """pip install of the dependencies into the Python that runs the installer. -> True when they import."""
-    say("installing Python packages (needs internet, 1-2 minutes) ...")
+def install_deps(dest=None):
+    """pip install of the dependencies into the Python that runs the installer. -> True when they import.
+    Linux / macOS, for an install (dest = <root>/program): into its own venv <program>/.venv (made here), and
+    pywebview for the app's own window as an optional extra."""
     py = sys.executable
-    if subprocess.run([py, "-m", "pip", "--version"], capture_output=True).returncode:
-        run_logged([py, "-m", "ensurepip", "--upgrade"])
-    pip = [py, "-m", "pip", "install", "--upgrade", "--disable-pip-version-check", "--no-input",
-           "--progress-bar", "off", "-q"]
-    if run_logged(pip + DEPS):
-        say("trying again as a per-user install (--user) ...")
-        run_logged(pip + ["--user"] + DEPS)
+    if not WINDOWS and dest is not None and dest.name == PROGRAM and not is_checkout(dest):
+        venv = ensure_venv(dest)
+        if venv is None:
+            return False
+        py = str(venv)
+    say("installing Python packages (needs internet, 1-2 minutes) ...")
+    # Linux / macOS: uv pip first when uv is there (the same packages, much quicker); pip when it fails
+    if WINDOWS or not find_uv() or pip_install(py, DEPS):
+        if subprocess.run([py, "-m", "pip", "--version"], capture_output=True).returncode:
+            run_logged([py, "-m", "ensurepip", "--upgrade"])
+        pip = [py, "-m", "pip", "install", "--upgrade", "--disable-pip-version-check", "--no-input",
+               "--progress-bar", "off", "-q"]
+        if run_logged(pip + DEPS) and (WINDOWS or not in_venv(py)):
+            say("trying again as a per-user install (--user) ...")
+            run_logged(pip + ["--user"] + DEPS)
     r = subprocess.run([py, "-c", CHECK_IMPORTS], capture_output=True, text=True)
     if r.returncode == 0:
         say("Python packages installed", "ok")
+        if not WINDOWS:
+            window_package(py)
         return True
     say(f"Python packages are missing: {(r.stderr.strip().splitlines() or ['?'])[-1]}", "err")
+    if not WINDOWS and not in_venv(py):
+        say("this Python may take no packages (PEP 668, 'externally-managed-environment'): run it in a venv - "
+            "python3 -m venv ~/.venvs/maxedcode && ~/.venvs/maxedcode/bin/python install.py ...", "warn")
     say("check the internet connection (a proxy? set HTTPS_PROXY) and run setup again; the details are in "
         f"{LOG}")
     return False
@@ -1049,7 +1139,9 @@ pause
 def write_launchers(dest):
     """dest = <root>\\program. The root gets only the two launchers and README.txt; maxed.bat, configure.bat and
     shortcuts.bat live in program\\bin. Launchers of older setups are removed; an old Cyrillic launcher just calls
-    maxedcode CLI.bat."""
+    maxedcode CLI.bat. Linux / macOS: program/bin/maxed (a shell script) and README.txt."""
+    if not WINDOWS:
+        return write_posix_launchers(dest)
     root = dest.parent
     files = {root / "maxedcode CLI.bat": LAUNCH, dest / "bin" / "maxed.bat": MAXED,
              dest / "bin" / "configure.bat": CONFIGURE, dest / "bin" / "shortcuts.bat": SHORTCUTS,
@@ -1071,7 +1163,10 @@ def write_launchers(dest):
 
 def shortcut(dest):
     """"maxedcode CLI" shortcuts (desktop and Start) -> <root>\\maxedcode CLI.bat; the old "Maxedcode" one is
-    removed. The "maxedcode app" shortcuts are made by the window itself (app_window)."""
+    removed. The "maxedcode app" shortcuts are made by the window itself (app_window). Linux: the app menu
+    entries; macOS: ~/Applications/maxedcode.app."""
+    if not WINDOWS:
+        return posix_shortcuts(dest)
     root = dest.parent
     ps = ("foreach($f in 'Desktop','Programs'){"
           "$s=(New-Object -COM WScript.Shell).CreateShortcut([Environment]::GetFolderPath($f)+'\\maxedcode CLI.lnk');"
@@ -1134,7 +1229,9 @@ def retire_old_launchers(bin_dir, path=None):
 def add_to_path(dest, stale=()):
     """Put dest\\bin in the user PATH, so 'maxed' works from any folder; folders of older setups are taken out.
     Already open windows need a restart. winreg, not setx (cuts PATH at 1024 chars) and not [Environment]
-    (expands %VARS% and saves PATH as REG_SZ)."""
+    (expands %VARS% and saves PATH as REG_SZ). Linux / macOS: ~/.local/bin/maxed (link_maxed)."""
+    if not WINDOWS:
+        return link_maxed(dest)
     import ctypes
     import winreg
     # older setups put maxed.bat in the root; a shared root (--dir C:\tools) stays in PATH
@@ -1166,6 +1263,498 @@ def add_to_path(dest, stale=()):
     say(f"maxed works from any folder now: open a new CMD window and type maxed ({dest / 'bin'})", "ok")
 
 
+# ---------- Linux / macOS: the venv, the maxed shell script, ~/.local/bin, app menu entries / maxedcode.app ----------
+
+VENV = ".venv"               # <program>/.venv: the packages go there, not into the system Python (PEP 668)
+MENU_FILES = ("maxedcode.desktop", "maxedcode-cli.desktop")
+POSIX_MAXED = r"""#!/bin/sh
+# maxed: the maxedcode agent in this terminal, working in the folder you are in.
+#   maxed                   the terminal agent        maxed --print "prompt"   headless
+#   maxed app               the app window            maxed configure          change the model server
+#   maxed shortcuts         make the app menu entries (Linux) / maxedcode.app (macOS) again
+#   maxed uninstall         remove this install (--purge: also chats and settings)
+#   maxed --update          look for a newer release now and install it
+# Written by setup (install.py); an update writes it again.
+PROGRAM={program}
+PY="$PROGRAM/.venv/bin/python"
+[ -x "$PY" ] || PY={py}
+[ -x "$PY" ] || PY=python3
+case "$1" in
+  app) shift; exec "$PY" "$PROGRAM/local_agent.py" --app "$@" ;;
+  configure) shift; exec "$PY" "$PROGRAM/install.py" --configure "$@" ;;
+  shortcuts) shift; exec "$PY" "$PROGRAM/install.py" --launchers --no-path "$@" ;;
+  uninstall) shift; exec "$PY" "$PROGRAM/install.py" --uninstall "$@" ;;
+esac
+exec "$PY" "$PROGRAM/local_agent.py" "$@"
+"""
+# ~/.local/bin/maxed when a symbolic link cannot be made there
+LINK_WRAPPER = '#!/bin/sh\n# maxedcode: the launcher of this install\nexec {maxed} "$@"\n'
+PATH_MARK = "# added by maxedcode setup: maxed from any folder (maxed uninstall takes it out)"
+# uv (https://docs.astral.sh/uv): when the Python running setup cannot make a venv (Debian / Ubuntu without
+# python3-venv), uv and its own Python go to ~/.maxedcode/uv - one download, no sudo; uv pip is used when it is there
+UV_URL = "https://astral.sh/uv/install.sh"
+UV_PYTHON = "3.12"
+# the app's own window: pywebview; on Linux with Qt from wheels (QtPy + PyQt6 + PyQt6-WebEngine, nothing from
+# the system's package manager), on macOS with Cocoa (pyobjc wheels)
+WINDOW_PACKAGE = {"linux": "pywebview[qt]", "darwin": "pywebview"}
+WINDOW_PROBE = {"linux": "from qtpy import QtWebEngineWidgets", "darwin": "import webview"}
+POSIX_README = """maxedcode
+=========
+
+Everything is in program/ - there is nothing to open there. Your chats, memory and settings are in
+{home} (kept when you install again or update).
+
+START (in any terminal; setup links ~/.local/bin/maxed to program/bin/maxed)
+  maxed                   the CLI, working in the folder you are in
+  maxed app               the app: chats, projects, a terminal and a browser (its own window when pywebview
+                          can draw one, otherwise a tab in your web browser)
+  maxed --print "prompt"  one answer without the UI (for scripts)
+  maxed configure         change the model server / model
+  maxed shortcuts         make the app menu entries (Linux) / ~/Applications/maxedcode.app (macOS) again
+  maxed --update          look for a newer release now (it also looks by itself once a day)
+  Without ~/.local/bin in PATH:  "{root}/program/bin/maxed" app
+  "maxed: command not found"? Add this line to ~/.bashrc or ~/.zshrc and open a new terminal:
+    export PATH="$HOME/.local/bin:$PATH"
+
+PYTHON
+  maxedcode runs in its own virtual environment, program/.venv (setup makes it and puts the packages there,
+  not into the system Python). When the system Python cannot make one, setup gets uv and its own Python into
+  ~/.maxedcode/uv (no sudo). The app's own window is pywebview (Linux: with Qt); without it the app opens in
+  your web browser.
+
+THE MODEL SERVER
+  maxedcode talks to a model server on this computer or the network (Strata, LM Studio, Ollama, llama.cpp ...).
+  Change it: maxed configure, or in the app: Settings - maxedcode.
+
+BROWSER EXTENSION (the agent in your own Chrome / Edge / Chromium)
+  In the app: Settings - maxedcode - Browser: turn it on, then "Open the step-by-step guide". The folder is:
+    {root}/program/maxedcode/chrome/extension
+
+UPDATE: automatic (Settings - General), maxed --update, or run the installer again (same folder).
+UNINSTALL: maxed uninstall. It removes this folder, ~/.local/bin/maxed, the app menu entries / maxedcode.app and
+  the browser bridge; your chats and settings in {home} stay. maxed uninstall --purge removes them too.
+  Installed with npm? maxedcode uninstall also removes the npm package.
+"""
+
+
+def user_home():
+    """The home folder (a function, so the tests can give it a temporary one)."""
+    return Path.home()
+
+
+def xdg_data():
+    return Path(os.environ.get("XDG_DATA_HOME") or user_home() / ".local" / "share")
+
+
+def local_bin():
+    return user_home() / ".local" / "bin"
+
+
+def menu_dir():
+    return xdg_data() / "applications"
+
+
+def icon_path():
+    return xdg_data() / "icons" / "hicolor" / "256x256" / "apps" / "maxedcode.png"
+
+
+def mac_app():
+    return user_home() / "Applications" / "maxedcode.app"
+
+
+def venv_python(dest):
+    return dest / VENV / "bin" / "python"
+
+
+def in_venv(py):
+    """py is the Python of a virtual environment (pip may install there)."""
+    r = subprocess.run([str(py), "-c", "import sys; print(int(sys.prefix != sys.base_prefix))"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "1"
+
+
+def program_python(dest=None):
+    """The Python the program runs on: the one running setup on Windows; on Linux / macOS the venv of the install
+    in dest (<root>/program/.venv) when it has one."""
+    if WINDOWS or dest is None:
+        return sys.executable
+    venv = venv_python(dest)
+    return str(venv) if venv.exists() else sys.executable
+
+
+def executable(path, text):
+    """A text file with LF line ends and mode 755 (a script, a launcher)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    path.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+
+
+def uv_home():
+    return DATA_DIR / "uv"
+
+
+def uv_env(managed=False):
+    """uv's settings: its Pythons next to it (managed: never a system Python that may lack venv)."""
+    env = {**os.environ, "UV_PYTHON_INSTALL_DIR": str(uv_home() / "python"), "UV_NO_MODIFY_PATH": "1"}
+    if managed:
+        env["UV_PYTHON_PREFERENCE"] = "only-managed"
+    return env
+
+
+def find_uv(download=False):
+    """uv from an earlier setup (~/.maxedcode/uv), one on PATH, or (download) the official standalone installer
+    into ~/.maxedcode/uv -> its path, or None."""
+    for u in (uv_home() / "uv", uv_home() / "bin" / "uv"):
+        if u.is_file() and os.access(u, os.X_OK):
+            return str(u)
+    found = shutil.which("uv")
+    if found or not download:
+        return found
+    say(f"getting uv, a Python manager (one program in {uv_home()}, no sudo) ...")
+    script = uv_home() / "uv-installer.sh"
+    try:
+        uv_home().mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(urllib.request.Request(UV_URL, headers=UA), timeout=60) as r:
+            script.write_bytes(r.read())
+        run_logged(["sh", str(script)], env={**uv_env(), "UV_INSTALL_DIR": str(uv_home()),
+                                            "INSTALLER_NO_MODIFY_PATH": "1"})
+    except (OSError, urllib.error.URLError) as e:
+        say(f"uv could not be downloaded: {why(e) if isinstance(e, urllib.error.URLError) else e}", "warn")
+        return None
+    finally:
+        with suppress(OSError):
+            script.unlink()
+    return find_uv()
+
+
+def pip_install(py, packages):
+    """packages into the Python py -> exit code: uv pip when uv is at hand (much quicker), else pip."""
+    uv = find_uv()
+    if uv:
+        return run_logged([uv, "pip", "install", "--python", str(py), "--upgrade", "--quiet", *packages],
+                          env=uv_env())
+    return run_logged([str(py), "-m", "pip", "install", "--upgrade", "--disable-pip-version-check", "--no-input",
+                       "--progress-bar", "off", "-q", *packages])
+
+
+def venv_works(py):
+    """The venv's python starts and has pip (Debian's venv without python3-venv has neither)."""
+    return py.exists() and subprocess.run([str(py), "-m", "pip", "--version"], capture_output=True).returncode == 0
+
+
+def ensure_venv(dest):
+    """<program>/.venv -> its python, or None. Made with the Python that runs setup; when that one cannot (no venv /
+    ensurepip module, as on Debian / Ubuntu without python3-venv), with uv and its own Python 3.12 - downloaded into
+    ~/.maxedcode/uv, no sudo. Made again when it no longer runs (its Python was upgraded or removed)."""
+    py, venv = venv_python(dest), dest / VENV
+    if venv_works(py):
+        return py
+    say(f"making the Python environment {venv} ...")
+    r = subprocess.run([sys.executable, "-m", "venv", "--clear", str(venv)], capture_output=True, text=True)
+    if r.returncode == 0 and venv_works(py):
+        return py
+    reason = ((r.stderr or r.stdout).strip().splitlines() or ["no pip in it"])[-1]
+    say(f"{sys.executable} cannot make it ({reason[:160]}): using uv and its own Python {UV_PYTHON} instead")
+    uv = find_uv(download=True)
+    if uv:
+        shutil.rmtree(venv, ignore_errors=True)
+        if run_logged([uv, "venv", "--seed", "--python", UV_PYTHON, str(venv)], env=uv_env(managed=True)) == 0 \
+                and venv_works(py):
+            return py
+    v = f"{sys.version_info.major}.{sys.version_info.minor}"
+    say("no Python environment could be made (no internet for uv?). Install Python with venv, then run setup "
+        f"again - Debian/Ubuntu: sudo apt install python3-venv (or python{v}-venv), Fedora: sudo dnf install "
+        "python3, Arch: sudo pacman -S python, macOS: brew install python", "err")
+    return None
+
+
+def window_package(py):
+    """pywebview for the app's own window (else the app opens in the web browser): on Linux with Qt from wheels,
+    on macOS with Cocoa. Optional: when it cannot be installed or loaded, setup says so and goes on."""
+    system = "darwin" if MACOS else "linux"
+    say(f"the app's own window: {WINDOW_PACKAGE[system]} (optional, a large download on Linux) ...")
+    if pip_install(py, [WINDOW_PACKAGE[system]]):
+        say("the app's own window is not installed: maxed app opens it in your web browser", "warn")
+        return False
+    r = subprocess.run([str(py), "-c", WINDOW_PROBE[system]], capture_output=True, text=True)
+    if r.returncode == 0:
+        say("pywebview installed: maxed app opens its own window", "ok")
+        return True
+    say("the app's own window cannot load here (" + ((r.stderr.strip().splitlines() or ["?"])[-1])[:160] +
+        "): maxed app opens it in your web browser", "warn")
+    return False
+
+
+def write_posix_launchers(dest):
+    """program/bin/maxed (sh, 755) and README.txt in the root; the bin/maxed of an update replaces the old one."""
+    root = dest.parent
+    executable(dest / "bin" / "maxed", POSIX_MAXED.replace("{program}", shlex.quote(str(dest)))
+               .replace("{py}", shlex.quote(sys.executable)))
+    (root / "README.txt").write_text(POSIX_README.replace("{root}", str(root)).replace("{home}", str(DATA_DIR)),
+                                     encoding="utf-8", newline="\n")
+
+
+def desktop_arg(arg):
+    """One argument of Exec= in a .desktop file, quoted as the Desktop Entry spec says: inside "..." the characters
+    " ` $ \\ get a backslash, and the value itself is escaped once more (a backslash is written twice)."""
+    arg = str(arg)
+    if re.search(r"""[\s"'\\><~|&;$*?#()`]""", arg):
+        arg = '"' + "".join("\\" * 4 if ch == "\\" else "\\\\" + ch if ch in '"`$' else ch for ch in arg) + '"'
+    return arg.replace("%", "%%")
+
+
+def desktop_entry(name, comment, command, terminal, icon, workdir=None):
+    lines = ["[Desktop Entry]", "Type=Application", "Version=1.0", f"Name={name}", f"Comment={comment}",
+             f"Exec={command}", f"Terminal={'true' if terminal else 'false'}", "Categories=Development;",
+             "Keywords=ai;agent;coding;llm;", "StartupNotify=true"]
+    if icon:
+        lines.append(f"Icon={icon}")
+    if workdir:
+        lines.append(f"Path={workdir}")
+    return "\n".join(lines) + "\n"
+
+
+def linux_menu(dest):
+    """~/.local/share/applications: "maxedcode" (the app window) and "maxedcode CLI" (in a terminal); the icon goes
+    to ~/.local/share/icons/hicolor/256x256/apps/maxedcode.png."""
+    maxed, png, icon = dest / "bin" / "maxed", dest / "desktop" / "maxedcode.png", ""
+    with suppress(OSError):
+        if png.exists():
+            icon_path().parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(png, icon_path())
+            icon = str(icon_path())
+    entries = {MENU_FILES[0]: desktop_entry("maxedcode", "The coding agent in its own window: chats, projects, a "
+                                            "terminal and a browser", f"{desktop_arg(maxed)} app", False, icon),
+               MENU_FILES[1]: desktop_entry("maxedcode CLI", "The maxedcode coding agent in a terminal",
+                                            desktop_arg(maxed), True, icon, user_home())}
+    for name, text in entries.items():
+        executable(menu_dir() / name, text)        # 755: some desktops start only launchers marked executable
+    if shutil.which("update-desktop-database"):
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["update-desktop-database", str(menu_dir())], capture_output=True, timeout=30)
+    say(f"\"maxedcode\" and \"maxedcode CLI\" are in the app menu ({menu_dir()})", "ok")
+
+
+def program_version(dest):
+    with suppress(OSError):
+        m = re.search(r'VERSION\s*=\s*"([^"]+)"', (dest / "maxedcode" / "version.py").read_text(encoding="utf-8"))
+        if m:
+            return m.group(1)
+    return "1.0"
+
+
+def mac_icon(png, icns):
+    """maxedcode.icns from the png with sips + iconutil (both come with macOS) -> True when it was made."""
+    if not png.exists() or not (shutil.which("sips") and shutil.which("iconutil")):
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        icons = Path(tmp) / "maxedcode.iconset"
+        icons.mkdir()
+        try:
+            for size in (16, 32, 128, 256):
+                for scale, tag in ((1, ""), (2, "@2x")):
+                    px = str(size * scale)
+                    subprocess.run(["sips", "-z", px, px, str(png), "--out", str(icons / f"icon_{size}x{size}{tag}.png")],
+                                   capture_output=True, check=True, timeout=60)
+            subprocess.run(["iconutil", "-c", "icns", str(icons), "-o", str(icns)], capture_output=True, check=True,
+                           timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return icns.exists()
+
+
+def mac_bundle(dest):
+    """~/Applications/maxedcode.app: a small bundle whose program is `program/bin/maxed app` (Launchpad, Spotlight,
+    the Dock). Made on this Mac, so Gatekeeper has nothing downloaded to check; an update keeps it (it only calls
+    program/bin/maxed)."""
+    import plistlib
+    app = mac_app()
+    shutil.rmtree(app, ignore_errors=True)
+    contents = app / "Contents"
+    (contents / "Resources").mkdir(parents=True, exist_ok=True)
+    executable(contents / "MacOS" / "maxedcode", "#!/bin/sh\n# maxedcode app: made by setup (install.py)\n"
+               f"exec {shlex.quote(str(dest / 'bin' / 'maxed'))} app \"$@\"\n")
+    version = program_version(dest)
+    info = {"CFBundleName": "maxedcode", "CFBundleDisplayName": "maxedcode", "CFBundleIdentifier": "com.maxedcode.app",
+            "CFBundleExecutable": "maxedcode", "CFBundlePackageType": "APPL", "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleVersion": version, "CFBundleShortVersionString": version, "LSMinimumSystemVersion": "10.13",
+            "NSHighResolutionCapable": True}
+    if mac_icon(dest / "desktop" / "maxedcode.png", contents / "Resources" / "maxedcode.icns"):
+        info["CFBundleIconFile"] = "maxedcode"
+    (contents / "Info.plist").write_bytes(plistlib.dumps(info))
+    say(f"maxedcode.app is in {app.parent} (Launchpad, Spotlight); the CLI: maxed in Terminal", "ok")
+
+
+def posix_shortcuts(dest):
+    try:
+        mac_bundle(dest) if MACOS else linux_menu(dest)
+    except OSError as e:
+        say(f"shortcuts not created: {e}", "warn")
+
+
+def option_label(key):
+    """The Linux / macOS text of an install option (console wizard and setup window)."""
+    if key == "link":
+        return ("Create ~/Applications/maxedcode.app (the app in Launchpad and Spotlight)" if MACOS else
+                "Add maxedcode (window) and maxedcode CLI (terminal) to the app menu")
+    if path_has(local_bin()):
+        return "Make maxed work in any terminal (links ~/.local/bin/maxed)"
+    rc = shell_rc()[0].relative_to(user_home()).as_posix()
+    return f"Make maxed work in any terminal (links ~/.local/bin/maxed, adds ~/.local/bin to PATH in ~/{rc})"
+
+
+def own_launcher(f):
+    """~/.local/bin/maxed is maxedcode's: a link to some install's program/bin/maxed, or its wrapper."""
+    with suppress(OSError):
+        if f.is_symlink():
+            target = Path(os.readlink(f))
+            if target.name == "maxed" and target.parent.name == "bin" and target.parent.parent.name == PROGRAM:
+                return True
+        text = f.read_text(encoding="utf-8", errors="replace")
+        return "local_agent.py" in text or "maxedcode: the launcher" in text
+    return False
+
+
+def path_has(folder):
+    """folder is in this process's PATH."""
+    want = os.path.realpath(folder)
+    return any(os.path.realpath(os.path.expanduser(p)) == want for p in os.environ.get("PATH", "").split(os.pathsep) if p)
+
+
+def shell_rc():
+    """The start file of the user's shell and the line that puts ~/.local/bin in PATH there."""
+    shell, home = Path(os.environ.get("SHELL", "")).name, user_home()
+    if shell == "fish":
+        return home / ".config" / "fish" / "config.fish", "fish_add_path $HOME/.local/bin"
+    line = 'export PATH="$HOME/.local/bin:$PATH"'
+    if shell == "zsh":
+        return home / ".zshrc", line
+    if shell == "bash":
+        return home / (".bash_profile" if MACOS else ".bashrc"), line
+    return home / ".profile", line
+
+
+def link_maxed(dest):
+    """~/.local/bin/maxed -> program/bin/maxed (a small wrapper when no link can be made); a maxed of another
+    program is left alone. ~/.local/bin not in PATH: the line that adds it goes into the shell's start file - the
+    wizard asked ("Make maxed work in any terminal", on by default); maxed uninstall takes it out again."""
+    folder, target = local_bin(), dest / "bin" / "maxed"
+    link = folder / "maxed"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            if not own_launcher(link):
+                say(f"{link} belongs to another program: left alone; start maxedcode with {target}", "warn")
+                return
+            link.unlink()
+        try:
+            link.symlink_to(target)
+        except OSError:
+            executable(link, LINK_WRAPPER.replace("{maxed}", shlex.quote(str(target))))
+    except OSError as e:
+        say(f"{link} not made: {e}", "warn")
+        return
+    if path_has(folder):
+        say(f"maxed works from any folder now ({link})", "ok")
+        return
+    rc, line = shell_rc()
+    try:
+        text = rc.read_text(encoding="utf-8", errors="replace") if rc.exists() else ""
+        if PATH_MARK not in text:
+            rc.parent.mkdir(parents=True, exist_ok=True)
+            with open(rc, "a", encoding="utf-8") as f:
+                f.write(("" if not text or text.endswith("\n") else "\n") + f"{PATH_MARK}\n{line}\n")
+        say(f"{folder} is in PATH now ({rc}): maxed works in a NEW terminal", "ok")
+    except OSError as e:
+        say(f"{rc} not changed ({e}): add this line to it, then open a new terminal:  {line}", "warn")
+
+
+def rc_files():
+    home = user_home()
+    return [home / n for n in (".bashrc", ".bash_profile", ".zshrc", ".profile")] + \
+        [home / ".config" / "fish" / "config.fish"]
+
+
+def remove_rc_lines():
+    """The PATH line link_maxed wrote (the marker and the line after it) out of the shell start files -> how many."""
+    done = 0
+    for rc in rc_files():
+        with suppress(OSError):
+            lines = rc.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not any(x.strip() == PATH_MARK for x in lines):
+                continue
+            keep, skip = [], 0
+            for x in lines:
+                if x.strip() == PATH_MARK:
+                    skip = 2
+                if skip:
+                    skip -= 1
+                    continue
+                keep.append(x)
+            rc.write_text("".join(keep), encoding="utf-8")
+            done += 1
+    return done
+
+
+def posix_remove_shortcuts(root):
+    """The app menu entries / maxedcode.app that start this install -> their names. Another install's stay."""
+    gone, exec_arg = [], desktop_arg(root / PROGRAM / "bin" / "maxed")
+    for name in MENU_FILES:
+        f = menu_dir() / name
+        with suppress(OSError):
+            text = f.read_text(encoding="utf-8")
+            if str(root) in text or exec_arg in text:
+                f.unlink()
+                gone.append(f.stem)
+    if gone and not any((menu_dir() / n).exists() for n in MENU_FILES):
+        with suppress(OSError):
+            icon_path().unlink()
+    app = mac_app()
+    with suppress(OSError):
+        if str(root) in (app / "Contents" / "MacOS" / "maxedcode").read_text(encoding="utf-8"):
+            shutil.rmtree(app)
+            gone.append(app.name)
+    return gone
+
+
+def posix_remove_link(root):
+    """~/.local/bin/maxed when it starts this install -> 1 when it was removed, else 0."""
+    link = local_bin() / "maxed"
+    with suppress(OSError):
+        if link.is_symlink():
+            ours = _inside(link.resolve(), root)
+        else:
+            ours = link.is_file() and str(root) in link.read_text(encoding="utf-8", errors="replace")
+        if ours:
+            link.unlink()
+            remove_rc_lines()           # the PATH line was for this maxed
+            return 1
+    return 0
+
+
+def bridge_files():
+    """Where the browser bridge of Linux / macOS may be written: ~/.maxedcode-app/browser and the browsers'
+    NativeMessagingHosts folders."""
+    home = user_home()
+    yield from (home / ".maxedcode-app" / "browser").glob("*")
+    for base in (home / ".config", home / "Library" / "Application Support"):
+        for pattern in ("*/NativeMessagingHosts/com.maxedcode.browser.json",
+                        "*/*/NativeMessagingHosts/com.maxedcode.browser.json"):
+            yield from base.glob(pattern)
+
+
+def posix_remove_bridge(root):
+    """The browser bridge, when one of its files points into this install -> True when it was removed."""
+    for f in bridge_files():
+        with suppress(OSError):
+            if f.is_file() and str(root) in f.read_text(encoding="utf-8", errors="replace"):
+                r = subprocess.run([program_python(root / PROGRAM), "-c",
+                                    "from maxedcode.chrome import unregister; unregister()"],
+                                   cwd=str(root / PROGRAM), capture_output=True, text=True)
+                return r.returncode == 0
+    return False
+
+
 # ---------- older setups: the program lay in ~\.maxedcode next to the data ----------
 
 LEGACY_ITEMS = ("local_agent.py", "install.py", "system_prompt.md", "config.json", "README.txt", "maxedcode",
@@ -1175,7 +1764,9 @@ LEGACY_ITEMS = ("local_agent.py", "install.py", "system_prompt.md", "config.json
 
 def legacy_installs(dest):
     """Old-layout installs to move out of the way: ~\\.maxedcode, or the chosen root itself, with the program at
-    the top (local_agent.py next to maxedcode\\config.py)."""
+    the top (local_agent.py next to maxedcode\\config.py). Only Windows ever had that layout."""
+    if not WINDOWS:
+        return []
     found = []
     for old in dict.fromkeys([LEGACY_DIR, dest.parent]):
         if old.resolve() != dest.resolve() and (old / "local_agent.py").exists() and \
@@ -1233,7 +1824,10 @@ def move_legacy(old, dest):
 
 def rehost(dest):
     """The browser bridge (native messaging host) is registered for a copy that is gone (moved by move_legacy,
-    deleted): point it at this one. A bridge of another working install is left alone."""
+    deleted): point it at this one. A bridge of another working install is left alone. Windows only: Linux / macOS
+    installs never had the old layout (maxedcode.chrome registers the bridge there when it is turned on)."""
+    if not WINDOWS:
+        return
     manifest = Path.home() / ".maxedcode-app" / "browser" / "com.maxedcode.browser.json"
     launcher = manifest.with_name("host.bat")
     if not manifest.exists():
@@ -1295,6 +1889,18 @@ def refresh_launchers(dest):
 def start_hints(dest, links=True):
     """The last lines of setup: how to start it."""
     root = dest.parent
+    if not WINDOWS:
+        linked = (local_bin() / "maxed").exists() and own_launcher(local_bin() / "maxed")
+        maxed = "maxed" if linked else str(dest / "bin" / "maxed")
+        where = (" or maxedcode in Launchpad / ~/Applications" if MACOS and mac_app().exists() else
+                 " or maxedcode in the app menu" if not MACOS and (menu_dir() / MENU_FILES[0]).exists() else "")
+        say(f"app:            {maxed} app{where}")
+        say(f"CLI:            {maxed}" + (" in any folder" + ("" if path_has(local_bin()) else " (in a NEW terminal)")
+                                          if linked else ""))
+        say("change server:  maxed configure (or in the app: Settings - maxedcode)")
+        say("menu entries:   maxed shortcuts")
+        say(f"how it works:   {root / 'README.txt'}")
+        return
 
     def link(name):            # no backslash inside f-string expressions: setup runs on Python 3.10 too
         return f'"{name}" shortcut, ' if links else ""
@@ -1330,6 +1936,8 @@ def uninstall_root():
 
 def remove_shortcuts(root):
     """Desktop and Start shortcuts that start something in root -> their names. Another install's stay."""
+    if not WINDOWS:
+        return posix_remove_shortcuts(root)
     ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $sh=New-Object -COM WScript.Shell;"
           "foreach($f in 'Desktop','Programs'){ $d=[Environment]::GetFolderPath($f);"
           "Get-ChildItem -LiteralPath $d -Filter 'maxedcode*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {"
@@ -1346,7 +1954,9 @@ def remove_shortcuts(root):
 
 
 def remove_from_path(root):
-    """User PATH entries inside root (program\\bin) -> how many were removed."""
+    """User PATH entries inside root (program\\bin) -> how many were removed. Linux / macOS: ~/.local/bin/maxed."""
+    if not WINDOWS:
+        return posix_remove_link(root)
     import ctypes
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as k:
@@ -1368,6 +1978,8 @@ def remove_from_path(root):
 
 def remove_bridge(root):
     """The browser bridge, when it points at this install's host.py -> True when it was removed."""
+    if not WINDOWS:
+        return posix_remove_bridge(root)
     launcher = Path.home() / ".maxedcode-app" / "browser" / "host.bat"
     with suppress(OSError):
         host = re.search(r'"([^"]*host\.py)"', launcher.read_text(encoding="utf-8"))
@@ -1384,12 +1996,13 @@ def remove_files(root):
     os.chdir(Path.home())                 # a cwd inside root would hold the folder
     left = []
     shutil.rmtree(root / PROGRAM, onerror=lambda f, p, e: left.append(p))
-    for name in ROOT_FILES:
-        with suppress(FileNotFoundError):
-            try:
-                (root / name).unlink()
-            except OSError:
-                left.append(str(root / name))
+    for name in ROOT_FILES:          # Linux / macOS have README.txt only; a missing file is not one in use
+        try:
+            (root / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            left.append(str(root / name))
     with suppress(OSError):
         root.rmdir()                      # only when empty
     return left
@@ -1524,9 +2137,11 @@ def main():
     if not ARGS.no_deps and (not ARGS.configure or (ARGS.first_run and deps_missing)):
         opts.append(("deps", "Install / update Python packages", True))
     if not ARGS.configure and not ARGS.no_shortcut:
-        opts.append(("link", "Create shortcuts: maxedcode app (window) and maxedcode CLI (terminal)", True))
+        opts.append(("link", "Create shortcuts: maxedcode app (window) and maxedcode CLI (terminal)" if WINDOWS else
+                     option_label("link"), True))
     if not ARGS.configure and not ARGS.no_path:
-        opts.append(("path", "Make maxed work in CMD from any folder (add program\\bin to PATH)", True))
+        opts.append(("path", "Make maxed work in CMD from any folder (add program\\bin to PATH)" if WINDOWS else
+                     option_label("path"), True))
     if models is not None:
         opts.append(("test", "Send a short test request to the model (loads it now)", False))
     want = {}
@@ -1554,8 +2169,8 @@ def main():
         ask("Press Enter to close")
 
 
-def deps_ok():
-    return subprocess.run([sys.executable, "-c", CHECK_IMPORTS], capture_output=True).returncode == 0
+def deps_ok(dest=None):
+    return subprocess.run([program_python(dest), "-c", CHECK_IMPORTS], capture_output=True).returncode == 0
 
 
 def app_sources(dest):
@@ -1590,8 +2205,8 @@ def run_update():
     for old in legacy_installs(dest):
         stale += move_legacy(old, dest)
     rehost(dest)
-    if not deps_ok():
-        install_deps()
+    if not deps_ok(dest):
+        install_deps(dest)
     write_launchers(dest)
     app = dest / "desktop" / "app"
     if before is not None and before == app_sources(dest) and (app / "maxedcode.exe").exists():
@@ -1617,7 +2232,7 @@ def run_install(dest, cur, base, key, models, kind, model, ctx, want):
             stale += move_legacy(old, dest)
         rehost(dest)
     if want.get("deps"):
-        install_deps()
+        install_deps(dest)
     write_config(dest, cur, base, key, model, ctx, kind)
     if kind == "strata":
         write_strata_settings()
@@ -1652,7 +2267,8 @@ def finish_hints(dest, models, kind, want):
             ", then maxedcode", "warn")
     start_hints(dest, bool(want.get("link")))
     if want.get("path"):
-        say("maxed works in a NEW CMD / PowerShell window (already open ones do not see the new PATH)")
+        say("maxed works in a NEW CMD / PowerShell window (already open ones do not see the new PATH)" if WINDOWS else
+            "maxed not found? open a new terminal (or add ~/.local/bin to PATH, see above)")
 
 if __name__ == "__main__":
     try:
