@@ -4072,6 +4072,9 @@
     addrHead: ['Адрес', 'Address'],
     addrSub: ['Сейчас используется этот. Другой компьютер или свой сервер — впишите IP или адрес в любом виде (192.168.0.10, 192.168.0.10:1234, http://host/v1), порт и /v1 подберутся сами.', 'This one is in use. Another computer or an own server: type an IP or an address in any form (192.168.0.10, 192.168.0.10:1234, http://host/v1); the port and /v1 are found.'],
     addrPh: ['например 192.168.0.10', 'e.g. 192.168.0.10'],
+    addrTrying: ['Проверяю адрес…', 'Checking the address…'],
+    addrFail: ['Не удалось связаться с приложением', 'Could not reach the app'],
+    addrDown: ['Агент сейчас не достучался до своего сервера. Впишите другой адрес или выберите найденный сервер выше.', 'The agent cannot reach its server now. Type another address or pick a server found above.'],
     cloudHead: ['Облачная модель', 'Cloud model'], cloudSub: ['OpenAI, Claude, Gemini, OpenRouter и другие — нужен ключ провайдера.', 'OpenAI, Claude, Gemini, OpenRouter and others: the provider\'s key is needed.'],
     answersIntro: ['Как модель отвечает. Пустое поле — значение по умолчанию для этой модели.', 'How the model answers. An empty field keeps this model\'s default.'],
     runHow: ['Как запускать', 'How to start'],
@@ -4220,34 +4223,43 @@
         info.appendChild(el('div', 'found-name', x.label))
         info.appendChild(el('div', 'found-sub', t('notRunning') + (x.path ? ' · ' + x.path : '')))
         r.title = t('notRunningSub')
+        r.appendChild(smallBtn(t('startIt'), function () { openSection('launch') }, 'outline'))
       })
       if (Array.isArray(lanServers) && !lanServers.length) list.appendChild(el('div', 'found-note', t('lanNone') + (lanNets.length ? ' (' + lanNets.join(', ') + ')' : '')))
     }
     draw()
-    if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; draw() }, function () { foundServers = []; draw() })
+    if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; renderConn() }, function () { foundServers = []; renderConn() })
     // an address in any form
     tab.appendChild(el('div', 'set-group', t('addrHead')))
-    var addr = inputEl(t('addrPh'), String(eff.base_url || '').replace(/^https?:[/][/]/, '').replace(/[/]v1[/]?$/, ''))
+    var addr = inputEl(t('addrPh'), '')
     addr.title = t('addrSub')
+    var addrNote = el('div', 'found-note', '')
     var go = smallBtn(t('connect'), function () {
       var v = addr.value.trim()
       if (!v) return addr.focus()
       go.disabled = true
+      addrNote.textContent = t('addrTrying')
       api('/api/settings', { base_url: v, server: null, model: null }).then(function (d) {
         go.disabled = false
-        if (d.error) return toast(d.error, 4000)
+        if (d.error) { addrNote.textContent = d.error; return }
         gotSettings(d)
+        var up = d.server && d.server.online, shown = String((d.effective || {}).base_url || '').replace(/^https?:[/][/]/, '')
         renderModelTabs()
-        toast((d.server && d.server.online ? t('connected') : t('offline')) + ': ' + (d.effective || {}).base_url, 3000)
-      })
+        toast((up ? t('connected') : t('offline')) + ': ' + shown, 3000)
+      }, function () { go.disabled = false; addrNote.textContent = t('addrFail') })
     })
     addr.onkeydown = function (e) { if (e.key === 'Enter') go.onclick() }
     addRow(tab, [addr, go])
+    tab.appendChild(addrNote)
+    addrNote.textContent = server.online ? '' : t('addrDown')
     // the recent ones: one click back
     var recent = server.recent || []
     if (recent.length) {
       tab.appendChild(el('div', 'set-group', t('recentServers')))
       var rbox = tab.appendChild(el('div', 'set-card found-list'))
+      var hostKey = function (u) { return String(u || '').replace(/^https?:[/][/]/, '').replace(/[/]+$/, '').replace(/[/]v1$/, '').toLowerCase() }
+      var live = {}
+      ;(foundServers || []).concat(Array.isArray(lanServers) ? lanServers : []).forEach(function (f) { if (f.running) live[hostKey(f.base)] = true })
       recent.forEach(function (x) {
         var b = smallBtn(x.cloud ? t('apiKey') + '…' : t('connect'), function () {
           if (x.cloud) { kit.change('base_url', x.base_url); if (x.model) kit.change('model', x.model); renderConn(); return }
@@ -4258,9 +4270,11 @@
           })
         }, 'outline')
         var r = rbox.appendChild(el('div', 'found-row'))
+        var known = x.cloud || !foundServers ? null : !!live[hostKey(x.base_url)]
+        if (known !== null) r.appendChild(el('span', 'state-dot ' + (known ? 'ok' : 'off')))
         var info = r.appendChild(el('div', 'found-info'))
         info.appendChild(el('div', 'found-name', x.label && x.label !== 'OpenAI-compatible server' ? x.label : t('ownServer')))
-        info.appendChild(el('div', 'found-sub', x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '')))
+        info.appendChild(el('div', 'found-sub', x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '') + (known === false ? ' · ' + t('nowOff') : '')))
         r.appendChild(b)
       })
     }
