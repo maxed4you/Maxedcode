@@ -11,6 +11,18 @@ os.environ["AGENT_HOME"] = _TEST_HOME.name
 
 from maxedcode import compact, config
 
+_KIND = config.SERVER_KIND
+
+
+def setUpModule():
+    # the default server, as on a fresh install: a server chosen in this copy's config.json (LM Studio gets no
+    # Strata cache fields) must not change what these tests check
+    config.SERVER_KIND = ""
+
+
+def tearDownModule():
+    config.SERVER_KIND = _KIND
+
 
 def msgs():
     return [{"role": "system", "content": "system"},

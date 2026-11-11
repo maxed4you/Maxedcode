@@ -223,7 +223,19 @@ def _segments(cmd):
             if ch in "'\"‘’“”":
                 out.append(("code", cmd[start:i]))
                 start, kind = i, ("sq" if ch in "'‘’" else "dq")
-            elif ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;"):
+            elif ch == "<" and cmd[i + 1:i + 2] == "#":
+                # <# block comment #>: `<# a && b #>` became `<# a; if ($?) { b #> }`, a parse error
+                j = cmd.find("#>", i + 2)
+                j = n if j < 0 else j + 2
+                out.append(("code", cmd[start:i]))
+                out.append(("comment", cmd[i:j]))
+                start = i = j
+                continue
+            # A comment also right after a string, a bracket, a variable or a number: `'x'# a && b` and
+            # `$p# a && b` are code + comment in PowerShell (only inside a bare word `a#b` is "#" a character).
+            elif ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;'\"‘’“”(){}[]|,"
+                                or re.fullmatch(r"\$(?:\w[\w:]*|[?^$_])|\d+(?:\.\d+)?",
+                                                re.split(r"[\s;(){}\[\]|,]", cmd[start:i])[-1])):
                 j = cmd.find("\n", i)
                 j = n if j < 0 else j
                 out.append(("code", cmd[start:i]))
@@ -279,6 +291,8 @@ def _chain(line):
                 depth += 1
             elif ch in ")}]":
                 depth -= 1
+                if depth < 0:
+                    return None      # a `}` of an outer line: where the chain ends is unknown
             two = text[i:i + 2]
             if depth == 0 and two in ("&&", "||"):
                 parts.append(buf)
@@ -288,13 +302,31 @@ def _chain(line):
             buf += ch
             i += 1
     parts.append(buf)
-    if not ops or len(set(ops)) > 1 or any(not p.strip() for p in parts):
+    # depth != 0: the line opens a block it does not close (`cd x && if ($a) {`), and `{ ... }` around the rest
+    # would end inside that block
+    if depth or not ops or len(set(ops)) > 1 or any(not p.strip() for p in parts):
         return None
     cond = "$?" if ops[0] == "&&" else "-not $?"
     s = parts[-1].strip()
     for p in reversed(parts[:-1]):
         s = f"{p.strip()}; if ({cond}) {{ {s} }}"
     return s
+
+
+def _logical_lines(cmd):
+    """cmd split at line breaks outside strings and comments: a quoted text over two lines stays one line."""
+    lines, cur = [], ""
+    for kind, text in _segments(cmd):
+        if kind != "code":
+            cur += text
+            continue
+        head, *rest = text.split("\n")
+        cur += head
+        for part in rest:
+            lines.append(cur)
+            cur = part
+    lines.append(cur)
+    return lines
 
 
 def autofix(cmd):
@@ -321,7 +353,7 @@ def autofix(cmd):
         fixed.append(text)
     cmd = "".join(fixed)
     if "&&" in cmd or "||" in cmd:
-        lines = cmd.split("\n")
+        lines = _logical_lines(cmd)
         for k, line in enumerate(lines):
             if "&&" in line or "||" in line:
                 new = _chain(line)

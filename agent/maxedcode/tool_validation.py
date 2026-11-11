@@ -304,6 +304,21 @@ def format_problems(tool_name: str, problems: list[dict]) -> str:
             ". No changes were made. Retry with arguments that match the tool schema.")
 
 
+def arguments_text(value: Any) -> str:
+    """Tool-call arguments as the JSON text the loop works on: some servers send an object instead of a
+    string (Ollama-style), or null; repair_json and the history need the text."""
+    if isinstance(value, str):
+        return value or "{}"
+    return "{}" if value is None else json.dumps(value, ensure_ascii=False)
+
+
+def content_text(value: Any) -> str:
+    """A reply's content as text: some servers send a list of content parts instead of a string."""
+    if isinstance(value, list):
+        return "".join(str(p.get("text") or "") if isinstance(p, dict) else str(p) for p in value)
+    return "" if value is None else str(value)
+
+
 def unknown_tool_error(tool_name: str, tool_specs: list[dict] | None = None) -> str | None:
     """Return an actionable error for an unadvertised tool without guessing execution."""
     if not tool_specs:
@@ -764,12 +779,14 @@ def normalize_tool_arguments(
     raw = raw_arguments or "{}"
     cut = cut_off_error(tool_name, raw, finish_reason)
     if cut:
-        # The model's own bytes stay in the history when they parse (prefix cache); "{}" only for broken JSON.
+        # The model's own bytes stay in the history when they parse to an object (prefix cache); "{}" for
+        # broken JSON and for a bare string/array/number, which the loop would take as the call's arguments.
         try:
-            json.loads(raw)
-            return {}, raw, cut
+            if isinstance(json.loads(raw), dict):
+                return {}, raw, cut
         except (ValueError, TypeError):
-            return {}, "{}", cut
+            pass
+        return {}, "{}", cut
     parsed = repair_json(raw)
     if not isinstance(parsed, dict) and isinstance(parsed, list):
         candidate = _object_from_list(parsed)
@@ -833,15 +850,17 @@ def sanitize_tool_history(messages: list[dict], tool_specs: list[dict] | None = 
         item = dict(message)
         calls = item.get("tool_calls")
         if item.get("role") == "assistant" and not calls:
-            text = (item.get("content") or "").strip()
+            text = content_text(item.get("content")).strip()      # a list of parts, or junk from an old session
             if not text or text in REJECTED_TOOLCALL_MARKERS:
                 continue
         if item.get("role") == "assistant" and isinstance(calls, list):
             normalized_calls = []
             for call in calls:
+                if not isinstance(call, dict):      # junk in a saved session: dropped, nothing to pair
+                    continue
                 call_copy = dict(call)
                 call_id = str(call_copy.get("id") or "")
-                fn = dict(call_copy.get("function") or {})
+                fn = dict(call_copy["function"]) if isinstance(call_copy.get("function"), dict) else {}
                 raw = fn.get("arguments") or "{}"
                 parsed = repair_json(raw)
                 name = str(fn.get("name") or "unknown")
@@ -849,7 +868,7 @@ def sanitize_tool_history(messages: list[dict], tool_specs: list[dict] | None = 
                     parsed = _object_from_list(parsed)
                 if isinstance(parsed, dict):
                     parsed = repair_tool_arguments(name, parsed, tool_specs)
-                if not isinstance(parsed, dict) or validate_required_arguments(name, parsed, tool_specs):
+                if not fn.get("name") or not isinstance(parsed, dict) or validate_required_arguments(name, parsed, tool_specs):
                     if call_id:
                         invalid_call_ids.add(call_id)
                     continue
@@ -861,7 +880,7 @@ def sanitize_tool_history(messages: list[dict], tool_specs: list[dict] | None = 
                 normalized_calls.append(call_copy)
             if normalized_calls:
                 item["tool_calls"] = normalized_calls
-            elif (item.get("content") or "").strip():
+            elif content_text(item.get("content")).strip():
                 item.pop("tool_calls", None)
             else:
                 # Keep history structurally valid while making the omitted legacy call explicit.

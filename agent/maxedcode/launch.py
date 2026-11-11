@@ -37,6 +37,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -176,21 +177,42 @@ def state_file():
     return home() / "launch.json"
 
 
+MAPS = ("model", "ctx", "way", "opts", "pid", "paths", "applied")     # launch.json fields that are objects
+LISTS = ("ways", "kobold", "gguf_dirs", "lms_models", "scripts")         # ... and lists
+
+
 def load_state():
+    """launch.json; a field of the wrong type (a hand edit, a cut write) is dropped, not a crash of every start."""
     with suppress(Exception):
-        data = json.loads(state_file().read_text(encoding="utf-8"))
+        data = json.loads(state_file().read_text(encoding="utf-8-sig"))
         if isinstance(data, dict):
+            for key in MAPS + LISTS + ("ours",):
+                want = list if key in LISTS else dict
+                if key in data and not isinstance(data[key], want):
+                    data.pop(key)
             return data
     return {}
 
 
 def save_state(data):
     path = state_file()
-    with suppress(OSError):
+    # a temporary file of its own per writer: the window, a start job and the CLI write at the same moment, and
+    # one shared launch.tmp was rewritten under another's replace (a write lost, or a cut file)
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+        for _ in range(5):          # Windows refuses a replace while another process reads the file: retried
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+    except OSError:
+        pass
+    finally:
+        with suppress(OSError):
+            tmp.unlink()
 
 
 def remember(kind, model=None, ctx=None, way=None, opts=None, pid=None, script=None, **extra):
@@ -583,6 +605,22 @@ def free_port(kind, say):
     return wait_down(base, 30)
 
 
+def make_room(base, label, say):
+    """The same program on the port the start needs: closed when it was started from here, then the port must be
+    free before the new one starts - else the old server's answer looked like the new one was ready at once (the
+    window said "loaded" while the new model had not even begun). -> None, or the failure to return."""
+    if servers.port_down(base):
+        return None
+    o = mine(base=base)
+    if not o:
+        return outside(label, _port(base))
+    release(o, say)
+    if not wait_down(base, 30):
+        return _fail(f"the {label} started from here before still answers on port {_port(base)}: close its "
+                     "window, then try again")
+    return None
+
+
 def wait_down(base, seconds):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -602,7 +640,7 @@ def wait_up(base, seconds, say, proc=None, log=None, what="the server", check=No
             ok = check() if check else servers.model_ids(base, timeout=2) is not None
         if ok:
             return True
-        if proc is not None and proc.poll() not in (None, 0):      # it ended with an error
+        if proc is not None and proc.poll() is not None:     # the server itself ended before it was ready
             return False
         last = (tail(log, 1) or [""])[-1] if log else ""
         text = f"waiting for {what}… {int(time.monotonic() - start)} s" + (f" · {last[:140]}" if last else "")
@@ -614,9 +652,13 @@ def wait_up(base, seconds, say, proc=None, log=None, what="the server", check=No
 
 
 def _ready(kind, base):
-    """The server answers, and Strata's engine runs (its API answers before the model is in memory)."""
-    if servers.model_ids(base, timeout=2) is None:
-        return False
+    """The server answers, and Strata's engine runs (its API answers before the model is in memory). One that
+    asks for a key (401/403) is up too: the key is the Connection tab's business, not a start that never ends."""
+    try:
+        if servers.model_ids(base, timeout=2) is None:
+            return False
+    except urllib.error.HTTPError:
+        return True
     if kind == "strata" or servers.kind_of(base, timeout=2) == "strata":
         return (strata_health(base) or {"loaded": False}).get("loaded") is not False
     return True
@@ -654,15 +696,12 @@ def script_start(kind, way, say):
     base = way.get("base") or (servers.default_base(kind) if kind in KINDS else "")
     if not base:
         return _fail("the address of this server is not set: edit the way and give it (e.g. 127.0.0.1:5001)")
-    if kind in KINDS and urllib.parse.urlsplit(base).port == port_of(kind):
+    if kind in KINDS and _port(base) == port_of(kind):
         if not free_port(kind, say):
             return _fail(f"port {port_of(kind)} is still taken")
-        if not servers.port_down(base):         # the same program runs: closed only when started from here
-            o = mine(base=base)
-            if not o:
-                return outside(servers.LABELS[kind], port_of(kind))
-            release(o, say)
-            wait_down(base, 30)
+        busy = make_room(base, servers.LABELS[kind], say)    # the same program runs: closed only when ours
+        if busy:
+            return busy
     elif not servers.port_down(base) and _ready(kind, base):
         say("it is already running")
         return _done(servers.kind_of(base, timeout=2) or kind, base, None)
@@ -785,11 +824,9 @@ def strata_start(model, ctx, say, opts=None, preset=None):
         return _fail("pick a model")
     if not free_port("strata", say):
         return _fail("port 8080 is still taken")
-    if not servers.port_down(base):     # another model or context: closed only when started from here
-        o = mine(base=base)
-        if not o:
-            return outside("Strata", 8080)
-        release(o, say)
+    busy = make_room(base, "Strata", say)      # another model or context: closed only when started from here
+    if busy:
+        return busy
     if preset:
         args = ["--preset", preset]
     else:
@@ -804,14 +841,18 @@ def strata_start(model, ctx, say, opts=None, preset=None):
         remember("strata", model=model, ctx=ctx, way="builtin", opts=opts or {})
     # `strata launch` hands the server to Strata's own runtime and returns: its exit is no verdict while
     # --status says the launch is starting. Ready = /health says the engine runs.
-    start, shown, checked = time.monotonic(), "", 0.0
+    start, shown, checked, misses = time.monotonic(), "", 0.0, 0
     while time.monotonic() - start < WAIT["strata"]:
         h = strata_health(base)
         if h and h.get("loaded") is not False:
             return _done("strata", base, None)
-        if proc.poll() not in (None, 0) and not h and time.monotonic() - checked > 10:
+        # an exit 0 is the hand-over too: --status tells whether a launch still runs (asked twice then, an
+        # error exit once), else an exit 0 with nothing running waited the whole 15 minutes
+        code = proc.poll()
+        if code is not None and not h and time.monotonic() - checked > 10:
             checked = time.monotonic()
-            if not strata_starting(cli, src):
+            misses = 0 if strata_starting(cli, src) else misses + 1
+            if misses >= (2 if code == 0 else 1):
                 return _fail("Strata did not start: " + (" | ".join(tail(log, 3)) or "no output"))
         secs = int(time.monotonic() - start)
         text = (f"Strata is loading {model or preset} into memory… {secs} s" if h else
@@ -946,19 +987,47 @@ def lms_start(model, ctx, say, opts=None, force=False):
     say("lms load " + " ".join(cmd[2:-1]))
     log = log_file("lmstudio")
     log.write_text("", encoding="utf-8")
+    before = {(m[0].lower(), m[1]) for m in servers.loaded_models(base, kind="lmstudio") or []}
     proc = spawn(cmd, log=log)
-    start = time.monotonic()
-    while proc.poll() is None and time.monotonic() - start < WAIT["lmstudio"]:
-        last = (tail(log, 1) or [""])[-1]
-        pct = re.findall(r"(\d+(?:\.\d+)?)\s*%", last)
-        say(f"loading {model}… {int(time.monotonic() - start)} s", float(pct[-1]) if pct else None)
-        time.sleep(1)
-    on = servers.loaded_models(base, kind="lmstudio") or []
-    hit = next((m for m in on if servers.same_model(m[0], model) or m[0].startswith(model)), None)
+    hit = lms_wait(base, model, proc, log, say, before)
     if not hit:
-        return _fail("LM Studio did not load the model: " + " | ".join(tail(log, 3)))
+        return _fail("LM Studio did not load the model: " + (" | ".join(tail(log, 3)) or "no output"))
     remember("lmstudio", model=model, ctx=ctx, way="builtin", opts=opts, applied={**(load_state().get("applied") or {}), "lmstudio": opts})
     return {**_done("lmstudio", base, hit[0]), "serve": serve}
+
+
+LMS_DONE = re.compile(r"loaded successfully|\b100(?:\.0+)?\s*%", re.I)
+LMS_LAG = 10        # seconds LM Studio's model list may lag behind an `lms load` that has ended
+
+
+def lms_wait(base, model, proc, log, say, before=()):
+    """Waits for `lms load` -> the loaded (id, window), or None.
+
+    Done when the model is in LM Studio's list as loaded and the load is over: `lms load` ended, or its output
+    says it finished (the command could stay open after "Model loaded successfully", and the window showed
+    "loading" for minutes over a model that was ready). A model that was already loaded before (the user's own
+    copy) does not count until the command ended. After the command ended the list gets LMS_LAG seconds."""
+    def find(fresh_only):
+        on = [m for m in servers.loaded_models(base, kind="lmstudio") or []
+              if servers.same_model(m[0], model) or m[0].startswith(model)]
+        fresh = [m for m in on if (m[0].lower(), m[1]) not in before]
+        return (fresh or ([] if fresh_only else on) or [None])[0]
+    start, ended = time.monotonic(), None
+    while time.monotonic() - start < WAIT["lmstudio"]:
+        code = proc.poll()
+        text = " ".join(tail(log, 3))
+        if code is not None and ended is None:
+            ended = time.monotonic()
+        if code is not None or LMS_DONE.search(text):
+            hit = find(fresh_only=code is None)
+            if hit:
+                return hit
+            if code not in (None, 0) or (ended and time.monotonic() - ended > LMS_LAG):
+                return None
+        pct = re.findall(r"(\d+(?:\.\d+)?)\s*%", text)
+        say(f"loading {model}… {int(time.monotonic() - start)} s", float(pct[-1]) if pct else None)
+        time.sleep(1)
+    return None
 
 
 def lms_stop(say):
@@ -1073,11 +1142,15 @@ def ollama_start(model, ctx, say, opts=None):
         except urllib.error.HTTPError as e:
             return str(e.read().decode("utf-8", "replace") or e)[:300]
         except Exception as e:
-            return str(e)[:300]
+            # the answer can time out on a slow disk while Ollama goes on loading: it counts once it is loaded
+            return "" if loaded() else str(e)[:300]
         return ""
 
+    def loaded():
+        return next((m for m in servers.loaded_models(base, kind="ollama") or [] if servers.same_model(m[0], model)), None)
+
     def window():
-        hit = next((m for m in servers.loaded_models(base, kind="ollama") or [] if servers.same_model(m[0], model)), None)
+        hit = loaded()
         return hit[1] if hit else None
 
     if servers.port_down(base) and not serve():
@@ -1276,12 +1349,9 @@ def llama_start(model, ctx, say, opts=None):
         return _fail("pick a .gguf model file")
     if not free_port("llamacpp", say):
         return _fail("port 8080 is still taken")
-    if not servers.port_down(base):
-        o = mine(base=base)
-        if not o:
-            return outside("llama-server", 8080)
-        release(o, say)
-        wait_down(base, 20)
+    busy = make_room(base, "llama-server", say)
+    if busy:
+        return busy
     opts = opts or {}
     cmd = [exe, "-m", model, "-c", str(ctx), "--host", "127.0.0.1", "--port", "8080", "--jinja"]
     flags = opt_flags("llamacpp", opts)
@@ -1356,7 +1426,7 @@ def follow_target(base):
     """base is on this PC and does not answer, and exactly one other model server runs here (started from its
     own window, a script, the tray): that one {"kind", "base", "model", "label"}, else None. The CLI and the
     window switch the agent to it."""
-    host = (urllib.parse.urlsplit(str(base or "")).hostname or "").lower()
+    host = servers.host_of(base)
     if host not in ("127.0.0.1", "localhost", "::1"):
         return None
     if not servers.port_down(base) and servers.model_ids(base, timeout=2) is not None:
@@ -1432,6 +1502,8 @@ def catalog():
                 m["loaded"] = bool(loaded.get("model")) and (servers.same_model(loaded["model"], m["id"])
                                                              or str(loaded["model"]).startswith(m["id"])
                                                              or m["id"].lower() in str(loaded["model"]).lower())
+                # Strata's API answers while its engine is not in memory (asleep, or loading it again): not "loaded"
+                m["asleep"] = m["loaded"] and bool(loaded.get("asleep"))
             w = ways(kind, st, cli, (presets.result() or []) if kind == "strata" else [],
                      (scripts.result() or []) if kind == "strata" else [])
             entry = {"kind": kind, "label": servers.LABELS[kind], "about": ABOUT[kind],
@@ -1547,7 +1619,7 @@ def stop(kind, say=None, base=None):
             if kind_now in STOP:
                 ok = STOP[kind_now](say)
             else:
-                port = urllib.parse.urlsplit(base).port
+                port = _port(base)
                 pid = listener(port) if port else None
                 if pid:
                     say(f"stopping the server on port {port} (PID {pid})")

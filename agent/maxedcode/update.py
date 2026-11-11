@@ -187,8 +187,9 @@ def stage(version, prepare=True, timeout=120):
         shutil.rmtree(DIR / version, ignore_errors=True)
         raise ValueError(f"the release {version} carries version {version_of(src) or '?'}")
     if prepare:       # pip only when this version's packages do not import yet (they rarely change)
+        # install.py prints UTF-8 (a Cyrillic path is not valid cp1251): decoded as that, never lost to a decode error
         r = subprocess.run([sys.executable, str(src / "install.py"), "--prepare"], capture_output=True, text=True,
-                           timeout=900, stdin=subprocess.DEVNULL)
+                           encoding="utf-8", errors="replace", timeout=900, stdin=subprocess.DEVNULL)
         if r.returncode:
             _change(error=f"packages for {version}: " + (r.stdout + r.stderr).strip()[-300:])
             return False
@@ -299,7 +300,8 @@ def apply(say=None, manual=False):
         say(f"updating {VERSION} -> {version} (your server, chats and settings stay) ...")
         try:
             r = subprocess.run([sys.executable, str(src / "install.py"), "--update", "--dir", str(root)],
-                               capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
+                               stdin=subprocess.DEVNULL)
             ok = r.returncode == 0 and version_of(PROGRAM) == version
             out = (r.stdout + r.stderr).strip()
         except (OSError, subprocess.SubprocessError) as e:

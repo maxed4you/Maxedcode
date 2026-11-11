@@ -395,6 +395,59 @@ class Programs(unittest.TestCase):
             self.assertIsNone(servers._probe_other(3091, "", 0.3))
 
 
+class StrataInstalled(unittest.TestCase):
+    """Strata counts as installed only when something of it runs: a first setup that never finished leaves
+    ~/.strata (data/state.json "complete": false, an empty models folder) and Programs\\Strata\\control - on such a
+    PC the window said "installed, not running" and nothing could start it."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.home, self.local = root / "home", root / "local"
+        (self.home / ".strata" / "data").mkdir(parents=True)
+        (self.home / ".strata" / "models").mkdir()
+        (self.home / ".strata" / "data" / "state.json").write_text('{"complete": false}', encoding="utf-8")
+        (self.local / "Programs" / "Strata" / "control").mkdir(parents=True)
+        self.src = None
+        for p in (patch.object(Path, "home", lambda: self.home),
+                  patch.dict(os.environ, {"LOCALAPPDATA": str(self.local), "ProgramFiles": str(root / "pf")}),
+                  patch.object(servers.shutil, "which", lambda name: None),
+                  patch.object(servers, "_which", lambda name, *more: None),
+                  patch.object(servers, "picked", lambda kind: None),
+                  patch.object(servers, "strata_source", lambda: self.src),
+                  patch.object(servers.sys, "platform", "win32" if os.name == "nt" else "linux")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def kinds(self):
+        return [x["kind"] for x in servers.installed()]
+
+    def test_leftovers_of_a_first_setup_are_no_install(self):
+        self.assertIsNone(servers.strata_app())
+        self.assertIsNone(servers.strata_program())
+        self.assertNotIn("strata", self.kinds())
+        import install
+        self.assertFalse(install.strata_installed())
+
+    @unittest.skipUnless(os.name == "nt", "the desktop app's folder is a Windows one")
+    def test_the_desktop_app_counts_and_is_said_how_to_start(self):
+        (self.local / "Programs" / "Strata" / "BUNDLE.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(servers.strata_app(), self.local / "Programs" / "Strata")
+        entry = next(x for x in servers.installed() if x["kind"] == "strata")
+        self.assertIsNone(entry["start"])                 # the app is never started from here
+        self.assertIn("Strata app", entry["how"])
+
+    def test_a_source_install_counts_and_starts_with_strata_launch(self):
+        self.src = self.home / "Strata"
+        (self.src / "bin").mkdir(parents=True)
+        (self.src / "strata.py").write_text("", encoding="utf-8")
+        self.assertEqual(servers.strata_program(), str(self.src))
+        entry = next(x for x in servers.installed() if x["kind"] == "strata")
+        self.assertEqual(entry["path"], str(self.src))
+        if os.name == "nt":
+            self.assertEqual(entry["start"][-1], "launch")
+
+
 class Start(unittest.TestCase):
     def test_an_unknown_kind_and_offline_answer_with_words(self):
         self.assertFalse(launch.start("vllm")["ok"])

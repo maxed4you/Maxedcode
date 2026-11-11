@@ -179,7 +179,7 @@ On Linux / macOS the folder (`~/.local/share/maxedcode`) holds `README.txt` and 
 | anything else | any OpenAI-compatible URL, with or without a key |
 
 Choose or change the server in setup, with `maxed configure`, with `/server` in the CLI, or in the app under
-**Settings → maxedcode**. A 32k context is enough; more is better. The bigger the model, the more you can hand it at
+**Settings → Connection**. A 32k context is enough; more is better. The bigger the model, the more you can hand it at
 once.
 
 ## Safety
@@ -199,7 +199,7 @@ Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## Browser extension
 
-Open the app, go to **Settings → maxedcode → Browser**, turn it on, then press **Open the step-by-step guide**. The
+Open the app, go to **Settings → Browser**, turn it on, then press **Open the step-by-step guide**. The
 guide shows, with screenshots, which folder to load in `chrome://extensions` (Developer mode → Load unpacked).
 
 ## Update / uninstall

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 import urllib.request
 from . import config
 from .config import BASE_URL, HOME, MAX_OUT, SESS, SYSTEM_AS_USER, MODEL, model_price, usage_cost, cost_text, NO_VISION
@@ -123,6 +124,8 @@ def normalize_tool_output(value, limit=None):
 def repair_json(s):
     """Parse tool-call JSON from the model, fixing typical local-model breakage: trailing commas,
     raw control chars, truncated/unbalanced brackets, python-style dicts. None if unfixable."""
+    if not isinstance(s, (str, bytes, bytearray)):     # arguments some servers send as an object, or null
+        return s if isinstance(s, dict) else None
     with suppress(Exception):
         return json.loads(s)
     t = re.sub(r",\s*([}\]])", r"\1", s)
@@ -156,9 +159,11 @@ def repair_json(s):
     t = "".join(out)
     with suppress(Exception):
         return json.loads(t)
-    with suppress(Exception):
+    with suppress(Exception), warnings.catch_warnings():
+        warnings.simplefilter("ignore")      # "C:\path" in a value: a SyntaxWarning on stderr for every call
         v = ast.literal_eval(t)
-        return v if isinstance(v, dict) else None
+        # only what JSON can carry: {"a": {"b"}} is a Python set, and the canonical json.dumps of it crashed the run
+        return json.loads(json.dumps(v)) if isinstance(v, dict) else None
     return None
 def tok(text):
     """Token estimate for any language: ASCII ≈ 4 characters per token, other alphabets (Cyrillic, Greek,
@@ -386,7 +391,20 @@ def wire(msgs, vision=None):
         if UI_ONLY.intersection(m):   # what the UI saved for /history: never part of the request
             m = {k: v for k, v in m.items() if k not in UI_ONLY}
         out.append(m)
-    return out
+    return _utf8_safe(out)
+
+
+def _utf8_safe(msgs):
+    """A lone UTF-16 surrogate (an unpaired escape in a model reply, or a tool result that echoes it) cannot be
+    sent as UTF-8: the SDK failed on every request of the run. Replaced by "?" in the request only, the same way
+    each time (cache-safe); the history keeps the text as it came."""
+    with suppress(TypeError, ValueError):
+        text = json.dumps(msgs, ensure_ascii=False)
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return json.loads(text.encode("utf-8", "replace").decode("utf-8"))
+    return msgs
 
 LATE_OPEN, LATE_CLOSE = "<injected>", "</injected>"
 
@@ -556,7 +574,12 @@ def write_json(path, data):
     f = Path(path)
     tmp = f.with_name(f"{f.name}.{time.time_ns()}.tmp")
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        text = json.dumps(data, ensure_ascii=False)
+        try:
+            raw = text.encode("utf-8")
+        except UnicodeEncodeError:      # a lone surrogate (an unpaired escape in a model reply): kept escaped
+            raw = json.dumps(data).encode("utf-8")
+        tmp.write_bytes(raw)
         tmp.replace(f)
     finally:
         with suppress(OSError):

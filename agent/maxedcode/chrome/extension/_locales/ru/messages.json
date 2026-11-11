@@ -18,7 +18,7 @@
     "message": "Нет связи с maxedcode"
   },
   "notConnectedSub": {
-    "message": "Включи браузер в maxedcode: Настройки → maxedcode → Браузер."
+    "message": "Включи браузер в maxedcode: Настройки → Браузер."
   },
   "offBanner": {
     "message": "Сейчас maxedcode не видит браузер и ничего в нём не делает."

@@ -20,6 +20,18 @@ from maxedcode.chrome import host
 from maxedcode.tools import browser
 from maxedcode.tools.catalog import session_catalog
 
+_KIND = config.SERVER_KIND
+
+
+def setUpModule():
+    # the default server, as on a fresh install: a server chosen in this copy's config.json (LM Studio gets no
+    # Strata cache fields) must not change what these tests check
+    config.SERVER_KIND = ""
+
+
+def tearDownModule():
+    config.SERVER_KIND = _KIND
+
 
 # a 1x1 white PNG
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC")

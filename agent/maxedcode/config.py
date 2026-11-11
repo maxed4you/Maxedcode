@@ -316,9 +316,18 @@ def quick_step(msgs):
     for m in tail:
         body = m.get("content")
         text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
-        if _STEP_ERROR.search(text[:4000]):
+        if step_failed(text):
             return False
     return True
+
+
+_NOTES = re.compile(r"^(\s*\[[^\n]*\]\s*(\n|$))+")
+
+
+def step_failed(text):
+    """A tool result that says it failed. Notes put before a result ("[Arguments normalized: ...]") are not its
+    start: a refusal after one counted as a success (a quick step after an error)."""
+    return bool(_STEP_ERROR.search(_NOTES.sub("", str(text or "")[:4000])))
 
 def norm_effort(effort):
     """User-facing level (off/low/medium/high/ultra). Legacy values: "none" is off, "default" and unset are medium."""
@@ -499,7 +508,7 @@ def follow_loaded(timeout=1.5):
     The TUI asks before each turn, headless with AGENT_CTX set (resolve_server is skipped then). Other servers
     and a server that is off cost nothing / 0.5 s (port_down). -> {"model", "ctx", "note"}"""
     global SERVER_KIND
-    kind = SERVER_KIND or {1234: "lmstudio", 11434: "ollama"}.get(urllib.parse.urlsplit(BASE_URL).port, "")
+    kind = SERVER_KIND or {1234: "lmstudio", 11434: "ollama"}.get(servers.port_in(BASE_URL), "")
     if kind not in servers.JIT_KINDS or servers.port_down(BASE_URL):
         return {"model": MODEL, "ctx": CTX_WINDOW, "note": ""}
     on = servers.loaded_models(BASE_URL, API_KEY, kind, timeout)

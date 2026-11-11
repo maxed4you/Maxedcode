@@ -32,7 +32,7 @@ SHOTS_KEEP = 20
 SHOT_SIDE = 1024                         # px: a page stays readable at ~700 image tokens (1280 cost ~1.1k)
 
 NOT_CONNECTED = ("Error: no browser is connected to maxedcode, nothing was done. Tell the user: open maxedcode "
-                 "Settings → maxedcode → Browser (or run `python -m maxedcode.chrome on`), load the extension in "
+                 "Settings → Browser (or run `python -m maxedcode.chrome on`), load the extension in "
                  "Chrome or Edge as shown there, and keep the browser open. Do not retry until they say it is done.")
 
 HELPER_RULES = (

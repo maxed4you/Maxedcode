@@ -120,7 +120,7 @@
     cloudNotesSub: ['Агент сам заполняет пустые заметки после поиска в интернете и по ним выбирает модель. Можно поправить.', 'The agent fills empty notes after a web search and picks models by them. You can edit them.'],
     cloudNotePh: ['пусто — агент поищет сам', 'empty: the agent looks it up'],
     setupTitle: ['Где работает модель?', 'Where does the model run?'],
-    setupIntro: ['Сервер ещё не выбран. Вот что нашлось на этом компьютере; сменить потом: Настройки → maxedcode.', 'No model server is chosen yet. This is what runs or is installed on this PC; change it later in Settings → maxedcode.'],
+    setupIntro: ['Сервер ещё не выбран. Вот что нашлось на этом компьютере; сменить потом: Настройки → Подключение.', 'No model server is chosen yet. This is what runs or is installed on this PC; change it later in Settings → Connection.'],
     setupScan: ['Ищу серверы…', 'Looking for servers…'], setupNone: ['На этом компьютере серверов не нашлось. Установите LM Studio, Ollama или Strata, либо введите адрес.', 'No model server found on this PC. Install LM Studio, Ollama or Strata, or enter an address.'],
     setupUse: ['Выбрать', 'Use'], setupStart: ['Запустить', 'Start'], setupStarting: ['Запускаю…', 'Starting…'],
     setupRunning: ['запущен', 'running'], setupInstalled: ['установлен, не запущен', 'installed, not running'],
@@ -174,7 +174,7 @@
     autoSub: ['Выполняет инструменты без вопросов', 'Runs tools without asking'],
     manualSub: ['Спрашивает перед правками файлов и командами', 'Asks before file edits and commands'],
     editsSub: ['Правит файлы сам, перед командами спрашивает', 'Edits files on its own, asks before commands'],
-    apHead: ['Разрешить?', 'Allow?'], apYes: ['Да', 'Yes'], apNo: ['Нет', 'No'], apAlways: ['Да, всегда (эту команду)', 'Yes, always (this exact call)'],
+    apHead: ['Разрешить?', 'Allow?'], apYes: ['Да', 'Yes'], apNo: ['Нет', 'No'], apAlways: ['Да, всегда (ровно это)', 'Yes, always (this exact call)'],
     apAllowed: ['Разрешено', 'Allowed'], apDenied: ['Отклонено', 'Denied'], apAlwaysDone: ['Разрешено навсегда', 'Always allowed'],
     apWaiting: ['Ждёт вашего ответа', 'Waiting for your answer'],
     apEdit: ['Изменить файл', 'Change a file'], apCommand: ['Выполнить команду', 'Run a command'], apPython: ['Запустить Python', 'Run Python'],
@@ -299,8 +299,8 @@
       'The same as the terminal\'s slash commands, on the same files: a change here is a change in the CLI too. The window applies it from the next turn. /new, /btw, /plan, /auto, /effort, /model, history, copy and export are buttons in the window already.'],
     cliFolder: ['Папка чата (правила проекта, память, навыки)', "The chat's folder (project rules, memory, skills)"],
     rulesHead: ['Разрешения — /permissions, /allow, /deny', 'Permissions: /permissions, /allow, /deny'],
-    rulesSub: ['В окне агент работает без вопросов: команда, которой правило велит спросить (ask), опасная команда и инструмент MCP не выполнятся, пока для них нет правила allow. deny запрещает всегда.',
-      'In the window the agent works without asking: a command a rule says to ask about (ask), a dangerous command and an MCP tool do not run until an allow rule covers them. deny always forbids.'],
+    rulesSub: ['Как часто спрашивать, задаёт режим под полем ввода: Manual и Accept edits спрашивают прямо в чате, Plan ничего не меняет. В Auto спросить некого: команда с правилом ask, инструмент MCP без правила allow и опасная команда (удаление вне проекта, форматирование диска…) не выполнятся. allow — без вопроса в любом режиме, deny — запрещено всегда.',
+      'How often the agent asks is the mode under the input: Manual and Accept edits ask right in the chat, Plan changes nothing. In Auto there is no one to ask: a command with an ask rule, an MCP tool without an allow rule and a dangerous command (deleting outside the project, formatting a disk…) do not run. allow: no question in any mode; deny: never.'],
     rulePh: ['например powershell(git *), py_run или mcp__сервер__инструмент', 'e.g. powershell(git *), py_run or mcp__server__tool'],
     fromSettings: ['из settings.json — меняется там', 'from settings.json: edit it there'],
     add: ['Добавить', 'Add'], remove: ['Убрать', 'Remove'], none: ['Нет', 'None'],
@@ -685,6 +685,9 @@
   var EDIT_TOOLS = { edit_file: 1, write_file: 1, patch: 1, apply_diff: 1 }
   // A failed step, told apart the way maxedcode does it (config._STEP_ERROR), plus PowerShell's "exited with code N"
   var STEP_ERROR = /^\s*(Error|Tool error|Not executed|Interrupted|The user rejected|Ошибка|blocked|refused)|exit(?:ed with)? code [1-9]|Traceback \(most recent/i
+  // A step's result says it failed. Notes put before a result ("[Arguments normalized: ...]") are not its start:
+  // the plan-mode refusal after one counted as a success, and Changed files / +N -M showed a write that never happened.
+  function stepFailed(text) { return STEP_ERROR.test(String(text || '').replace(/^(\s*\[[^\n]*\]\s*(\n|$))+/, '').slice(0, 2000)) }
   var ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]/g
   var RESULT_LINES = 60          // a longer result shows its head and a "show all" button
   function argSummary(name, args) {
@@ -786,6 +789,14 @@
       pre.appendChild(el('span', /^@@/.test(line) ? 'diff-hunk' : /^\+(?!\+\+)/.test(line) ? 'diff-add' : /^-(?!--)/.test(line) ? 'diff-del' : '', line + '\n'))
     })
   }
+  // While a step runs or waits for an answer it is said in the present ("Writing a file"), and in the past only once
+  // it worked: "Wrote a file" over a write still waiting for the user's Yes (or one refused) said what never happened.
+  var TOOL_PENDING = {
+    write_file: ['Запись файла', 'Writing a file'], edit_file: ['Правка файла', 'Editing a file'],
+    patch: ['Правка файла', 'Editing a file'], apply_diff: ['Правка файла', 'Editing a file'],
+    py_run: ['Запуск Python', 'Running Python'], bg_kill: ['Остановка задачи', 'Stopping a job'],
+    read_file: ['Чтение файла', 'Reading a file'], fetch_url: ['Открытие страницы', 'Fetching a page']
+  }
   function toolLabel(name) {
     var row = TOOL_LABELS[name]
     if (row) return { label: tl(row), icon: row[2] }
@@ -798,7 +809,7 @@
     d._name = call.name
     var head = el('button', 'step-head')
     head.innerHTML = '<span class="ico">' + icon(info.icon) + '</span>'
-    head.appendChild(el('span', 'tname', info.label))
+    d._tname = head.appendChild(el('span', 'tname', TOOL_PENDING[call.name] ? tl(TOOL_PENDING[call.name]) : info.label))
     var lines = EDIT_TOOLS[call.name] && typeof a.path === 'string' ? editLines(call.name, a) : null
     var body = el('div', 'step-body')
     if (lines) {
@@ -955,7 +966,8 @@
     if (!ms && d._t0) ms = Date.now() - d._t0
     d._clock.textContent = ms >= 50 ? dur(ms) : ''
     var text = String(content || '').replace(ANSI_RE, '')
-    var bad = STEP_ERROR.test(text)
+    var bad = stepFailed(text)
+    if (d._tname && TOOL_PENDING[d._name] && !bad) d._tname.textContent = toolLabel(d._name).label
     d._bad = bad
     d.classList.toggle('failed', bad)
     d._st.className = 'st ' + (bad ? 'err' : 'ok')
@@ -2577,7 +2589,7 @@
       ;(m.calls || []).forEach(function (c) {
         if (!EDIT_TOOLS[c.name]) return
         var res = results[c.id]
-        if (res === undefined || STEP_ERROR.test(String(res).slice(0, 300))) return
+        if (res === undefined || stepFailed(res)) return
         var a = parseArgs(c.args) || {}
         var path = a.path || (String(a.diff || '').match(/^\+\+\+ (?:b\/)?(\S+)/m) || [])[1] || '?'
         var lines = editLines(c.name, a) || []
@@ -3599,7 +3611,7 @@
     runCtxSub: ['Сколько текста модель помнит за раз. Больше — дольше без сжатия, но нужно больше видеопамяти. Удобно 32K–64K.',
       'How much text the model holds at once. More: longer without compaction, but more graphics memory. 32K-64K is comfortable.'],
     runSetUp: ['настроена на', 'set up for'], runNoLoaded: ['модель не загружена', 'no model loaded'], runLoading: ['Запускаю', 'Starting'],
-    runNoModels: ['Моделей пока нет', 'No models yet'], runLoaded: ['загружена', 'loaded'], runVision: ['видит картинки', 'reads pictures'],
+    runNoModels: ['Моделей пока нет', 'No models yet'], runLoaded: ['загружена', 'loaded'], runAsleep: ['не в памяти — загрузится с первым запросом', 'not in memory: loads with the first request'], runVision: ['видит картинки', 'reads pictures'],
     runUpTo: ['до', 'up to'], runScript: ['Свой скрипт запуска', 'Own start script'],
     runScriptSub: ['Если сервер запускается вашим .bat/.sh (свои флаги, пресеты), выберите его — он откроется в своём окне. «Нет» — обычный запуск с моделью и контекстом выше.',
       'If the server starts from your own .bat/.sh (own flags, presets), pick it: it opens in its own window. None: the usual start with the model and context above.'],
@@ -3681,7 +3693,8 @@
           clearInterval(launchTimer)
           launchTimer = null
           if (j && j.result) {
-            if (j.result.ok && j.do === 'start') toast(t('runDone') + ': ' + (j.result.model || j.model || '') + (j.result.ctx ? ' · ' + ctxLabel(j.result.ctx) : ''), 4000)
+            if (j.result.ok && j.do === 'start' && j.result.saved === false) toast(t('runNotSaved'), 6000)
+            else if (j.result.ok && j.do === 'start') toast(t('runDone') + ': ' + (j.result.model || j.model || '') + (j.result.ctx ? ' · ' + ctxLabel(j.result.ctx) : '') + ' · ' + shortAddr(j.result.base), 4000)
             else if (j.result.ok) toast(t('runStopped'), 2500)
           }
           foundServers = null
@@ -3904,7 +3917,7 @@
     var st = body.appendChild(el('div', 'run-state'))
     if (s.kind !== 'other' || s.running) st.appendChild(el('span', 'state-dot ' + (s.running ? 'ok' : s.installed ? 'off' : 'none')))
     var lo = s.loaded || {}
-    var line = s.running ? t('runRunning') + (lo.label ? ' · ' + lo.label : '') + (lo.model ? ' · ' + shortModel(lo.model) + (lo.ctx ? ' · ' + ctxLabel(lo.ctx) : '') : s.kind === 'other' ? '' : ' · ' + t('runNoLoaded'))
+    var line = s.running ? t('runRunning') + (lo.label ? ' · ' + lo.label : '') + (lo.model ? ' · ' + shortModel(lo.model) + (lo.ctx ? ' · ' + ctxLabel(lo.ctx) : '') + (lo.asleep ? ' · ' + t('runAsleep') : '') : s.kind === 'other' ? '' : ' · ' + t('runNoLoaded'))
       : s.kind === 'other' ? t('about_other') : s.installed ? t('runOff') : t('runNotInstalled')
     st.appendChild(el('span', s.kind === 'other' && !s.running ? 'run-about' : 'run-state-text', line))
     if (s.running && isCurrent(s)) st.appendChild(el('span', 'tag', t('runCurrent')))
@@ -3922,11 +3935,13 @@
     var p = pickOf(s), ways = s.ways || [], models = s.models || []
     var save = function (k, v) { launchPick[s.kind] = Object.assign({}, launchPick[s.kind] || {}, { way: p.way, opts: p.opts }); launchPick[s.kind][k] = v; if (k === 'model') delete launchPick[s.kind].ctx }
     if (!s.installed && !ways.length) {
-      body.appendChild(el('p', 'run-about', t('about_' + s.kind)))
+      // running, but its program is not where this PC's programs are (started by hand from a folder of its own):
+      // no "Download" over a server that works; how to start it from here instead
+      body.appendChild(el('p', 'run-about', s.running ? t('runNoProgram').replace('{x}', s.label) : t('about_' + s.kind)))
       var acts = body.appendChild(el('div', 'run-actions'))
-      acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
-      acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
-      acts.appendChild(smallBtn(t('whereIs'), function () { pickProgram(s) }, 'outline'))
+      if (!s.running) acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
+      if (!s.running) acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
+      acts.appendChild(smallBtn(t('whereIs'), function () { pickProgram(s) }, s.running ? '' : 'outline'))
       acts.appendChild(smallBtn(t('wayAddShort'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link'))
       if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
       return
@@ -3991,7 +4006,7 @@
         if (facts.length) info.appendChild(el('span', 'run-model-sub', facts.join(' · ')))
         r.title = m.id
         if (m.vision) r.appendChild(el('span', 'tag', t('runVision')))
-        if (m.loaded) r.appendChild(el('span', 'tag ok', t('runLoaded')))
+        if (m.loaded) r.appendChild(el('span', m.asleep ? 'tag' : 'tag ok', t(m.asleep ? 'runAsleep' : 'runLoaded')))
         r.onclick = function () { save('model', m.id); drawLaunch() }
       })
       if (p.model) {
@@ -4044,12 +4059,16 @@
   // a cloud API with its key, the recent ones. Answers: sampling and the default effort.
   Object.assign(TEXT, {
     connTab: ['Подключение', 'Connection'],
+    addrFrom: ['Модель берётся с', 'The model comes from'],
+    startedHere: ['запущен во вкладке «Запуск моделей»', 'started on the Start models tab'],
+    runNotSaved: ['Сервер запущен, но агент не переключился на него: выберите его во вкладке «Подключение»', 'The server runs, but the agent did not switch to it: pick it on the Connection tab'],
     ggufDir: ['Папка с моделями…', 'Models folder…'],
     notRunning: ['установлен, не запущен', 'installed, not running'],
     notRunningSub: ['Запустите его как обычно (или во вкладке «Запуск моделей») — агент подключится сам', 'Start it as usual (or on the Start models tab): the agent connects by itself'],
     findPrograms: ['Найти программы', 'Find programs'], findBusy: ['Ищу на дисках…', 'Looking…'],
     findSub: ['Поискать llama-server, Ollama, LM Studio, Strata и KoboldCpp на дисках этого компьютера (несколько секунд)', 'Look for llama-server, Ollama, LM Studio, Strata and KoboldCpp on this computer\'s disks (a few seconds)'],
     findFound: ['Найдено', 'Found'], findNone: ['Новых программ не найдено', 'No new programs found'],
+    runNoProgram: ['{x} работает, но сама программа не найдена на этом ПК (запущена из своей папки). Чтобы запускать её отсюда, укажите её файл или добавьте свой способ запуска.', '{x} runs, but its program is not found on this PC (started from a folder of its own). To start it from here, point to its file or add your own way to start it.'],
     whereIs: ['Указать, где она…', 'Where is it…'], whereWrong: ['Это не файл этой программы', 'This is not this program\'s file'],
     byApp: ['из приложения', 'from here'], byHand: ['запущен вручную', 'started by hand'],
     byAppSub: ['Запущен отсюда: новый запуск отсюда сначала закроет его', 'Started from here: a new start from here closes it first'],
@@ -4156,7 +4175,9 @@
     var what = [KIND_LABELS[server.kind] || t('localServer'), eff.model && eff.model !== 'local' ? shortModel(eff.model) : '',
       server.online && server.ctx ? ctxLabel(server.ctx) : ''].filter(Boolean).join(' · ')
     info.appendChild(el('div', 'conn-now-main', what))
-    info.appendChild(el('div', 'conn-now-sub', String(eff.base_url || '').replace(/^https?:[/][/]/, '') + (server.online ? '' : ' · ' + t('nowOff'))))
+    var here = server.started_here
+    info.appendChild(el('div', 'conn-now-sub', t('addrFrom') + ' ' + shortAddr(eff.base_url) + (here ? ' · ' + t('startedHere') : '') +
+      (server.online ? '' : ' · ' + t('nowOff'))))
     if (withChange) card.appendChild(smallBtn(t('nowChange'), function () { openSection('conn') }, 'outline'))
   }
   function connectTo(x, b) {
@@ -4238,7 +4259,7 @@
     if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; renderConn() }, function () { foundServers = []; renderConn() })
     // an address in any form
     tab.appendChild(el('div', 'set-group', t('addrHead')))
-    var addr = inputEl(t('addrPh'), '')
+    var addr = inputEl(eff.base_url ? shortAddr(eff.base_url) : t('addrPh'), '')
     addr.title = t('addrSub')
     addrBox = addr
     var addrNote = el('div', 'found-note', '')
@@ -4259,7 +4280,7 @@
     addr.onkeydown = function (e) { if (e.key === 'Enter') go.onclick() }
     addRow(tab, [addr, go])
     tab.appendChild(addrNote)
-    addrNote.textContent = server.online ? '' : t('addrDown')
+    addrNote.textContent = server.online ? '' : t('addrDown')      // the card above says where the model comes from
     // the recent ones: one click back
     var recent = server.recent || []
     if (recent.length) {
@@ -4605,7 +4626,7 @@
         var r = list.appendChild(el('div', 'cli-row setup-server'))
         var info = r.appendChild(el('div', 'setup-info'))
         var top = info.appendChild(el('div', 'setup-top'))
-        top.appendChild(el('span', 'm', x.label))
+        top.appendChild(el('span', 'm', x.label === 'OpenAI-compatible server' ? t('ownServer') : x.label))
         top.appendChild(el('span', 's', sub + ' · ' + x.base))
         // exactly what runs: the start command of an installed server, the program folder of a running one
         var starts = x.start && x.start.length, run = starts ? x.start.join(' ') : x.path || ''

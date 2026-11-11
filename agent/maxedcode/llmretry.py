@@ -13,6 +13,7 @@ and retries them with backoff (`llm-pi-ai/src/stream.ts`, `llm-retry`). The same
 * a cancel (Esc) during a wait stops at once.
 """
 import asyncio
+import json
 import os
 
 try:     # both come with the openai package; offline test environments stub openai and have neither
@@ -36,6 +37,10 @@ class StreamCut(Exception):
     """The stream ended without a finish reason on a server that normally sends one: the connection broke."""
 
 
+class BadReply(StreamCut):
+    """A 200 answer that is no model reply: no choices, or a body that is not JSON (a proxy's error page)."""
+
+
 RETRYABLE = tuple(x for x in (getattr(openai, "APIConnectionError", None), getattr(openai, "InternalServerError", None),
                                getattr(openai, "RateLimitError", None), getattr(httpx, "TransportError", None),
                                StreamCut)
@@ -57,6 +62,13 @@ def stream_ended(finish):
         raise StreamCut("the stream ended without a finish reason")
 
 
+def reply(response):
+    """A complete response, checked: one without choices is a server failure to retry, not an empty answer."""
+    if not getattr(response, "choices", None):
+        raise BadReply("the server answered without any choice")
+    return response
+
+
 def _delay(exc, attempt):
     if type(exc).__name__ == "RateLimitError":
         try:
@@ -74,7 +86,10 @@ async def call(fn, on_retry=None):
     """await fn() and repeat it on a server failure. on_retry(exc, attempt, wait) may be sync or async."""
     for attempt in range(RETRIES + 1):
         try:
-            return await fn()
+            try:
+                return await fn()
+            except json.JSONDecodeError as exc:    # the SDK parses a 200 body that is not JSON
+                raise BadReply(f"the server's answer is not JSON ({exc})") from None
         except RETRYABLE as exc:
             if attempt >= RETRIES:
                 raise

@@ -22,6 +22,18 @@ from maxedcode.tools import tool_request_policy
 from maxedcode.ui import app
 from maxedcode.util import build_content, squash_loops, wire
 
+_KIND = config.SERVER_KIND
+
+
+def setUpModule():
+    # the default server, as on a fresh install: a server chosen in this copy's config.json (LM Studio gets no
+    # Strata cache fields) must not change what these tests check
+    config.SERVER_KIND = ""
+
+
+def tearDownModule():
+    config.SERVER_KIND = _KIND
+
 
 def spec(name, properties, required=()):
     return {"type": "function", "function": {"name": name, "parameters": {

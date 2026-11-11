@@ -22,7 +22,8 @@ from .request_compat import unsupported_optional_fields
 from .streaming import STREAM_USAGE, stream_completion
 from .util import attach_late, cached_tokens, normalize_tool_output, repair_json, split_think, wire, session_file, index_session, tool_content
 from .tool_validation import (broken_text_call, canonical_tool_name, cut_off_error, sanitize_tool_history,
-                              text_tool_calls, validate_tool_arguments, unknown_tool_error)
+                              text_tool_calls, validate_tool_arguments, unknown_tool_error, arguments_text,
+                              content_text)
 from . import cachekey
 from .shelltool import NAME as SHELL_TOOL
 from . import cloud
@@ -608,7 +609,11 @@ async def run(prompt=None, agent=None, allow_write=False, force_readonly=False, 
                 async def retrying(exc, attempt, wait, step=step):
                     await _tell(activity, f"step {step + 1} · server failed ({type(exc).__name__}), "
                                           f"retry {attempt}/{llmretry.RETRIES} in {wait:g} s")
-                r, looped = await llmretry.call(lambda: _complete(client, kw, _live_view(session_id)), retrying)
+                async def checked():           # a reply without choices is a failure to retry, as in the main loop
+                    got, cut = await _complete(client, kw, _live_view(session_id))
+                    llmretry.reply(got)
+                    return got, cut
+                r, looped = await llmretry.call(checked, retrying)
                 unsent = False
             except llmretry.RETRYABLE as exc:
                 # The server stayed down through every retry: report what was done instead of failing the
@@ -638,9 +643,11 @@ async def run(prompt=None, agent=None, allow_write=False, force_readonly=False, 
                     state.upsert_child_session(session_id, live_think="", live_text="")
                 continue
             m = r.choices[0].message
-            content = m.content or ""
-            calls = [{"id": c.id, "name": c.function.name, "arguments": c.function.arguments or "{}"}
-                     for c in (m.tool_calls or [])]
+            content = content_text(m.content)
+            # a null name / id, arguments as an object (Ollama-style): the same text forms as the main loop's
+            calls = [{"id": c.id or f"subcall_{step}_{i}", "name": (c.function.name if c.function else "") or "",
+                      "arguments": arguments_text(c.function.arguments if c.function else None)}
+                     for i, c in enumerate(m.tool_calls or [])]
             reasoning = getattr(m, "reasoning_content", None) or (getattr(m, "model_extra", None) or {}).get("reasoning_content")
             await _tell_think(activity, step + 1, reasoning or split_think(content)[0])
             if not calls and content:

@@ -100,7 +100,10 @@ def load_config() -> dict:
 
 def provider_of(base_url: str) -> str:
     """Provider name of an endpoint ("gemini", "openrouter" ...) or its host."""
-    host = (urlsplit(str(base_url or "")).hostname or "").lower()
+    try:
+        host = (urlsplit(str(base_url or "")).hostname or "").lower()
+    except ValueError:          # "https://x[::1]": not a URL Python can read
+        host = ""
     for name, (url, _) in PROVIDERS.items():
         if host == urlsplit(url).hostname:
             return name

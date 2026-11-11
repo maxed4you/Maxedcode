@@ -20,6 +20,8 @@ REPO = Path(__file__).resolve().parents[2]
 FAKE_INSTALL = r'''
 import sys, pathlib
 here = pathlib.Path(__file__).parent
+if (here / "noisy.txt").exists():      # a line no code page takes as it is (UTF-8 of a Cyrillic path, cp1251 0x98)
+    sys.stdout.buffer.write(b"copying files to C:/Users/" + bytes([0x81, 0x98, 0xD0, 0x98]) + b" ...")
 if "--prepare" in sys.argv:
     sys.exit(0)
 if "--update" in sys.argv:
@@ -50,7 +52,7 @@ class UpdateTests(unittest.TestCase):
             self.addCleanup(p.stop)
             os.environ.pop(var, None)
 
-    def release(self, version, fail=False, nested=False):
+    def release(self, version, fail=False, nested=False, noisy=False):
         """A release zip with that version -> its file:// URL (ASSET is patched to it)."""
         src = self.root / f"rel-{version}"
         top = src / "maxedcode-x" if nested else src
@@ -59,6 +61,8 @@ class UpdateTests(unittest.TestCase):
         (top / "maxedcode" / "version.py").write_text(f'VERSION = "{version}"')
         if fail:
             (top / "fail.txt").write_text("1")
+        if noisy:
+            (top / "noisy.txt").write_text("1")
         z = self.root / f"maxedcode-{version}.zip"
         with zipfile.ZipFile(z, "w") as f:
             for p in src.rglob("*"):
@@ -141,6 +145,12 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn("ready", st)
         self.assertEqual(update.take_notice(), "99.0.0")
         self.assertEqual(update.take_notice(), "")
+
+    def test_any_bytes_from_the_installer_do_not_break_the_update(self):
+        # install.py prints UTF-8; read in the locale's code page a Cyrillic path was lost and apply() raised
+        self.stage("99.0.0", noisy=True)
+        self.assertEqual(update.apply(say=lambda t: None), "99.0.0")
+        self.assertNotIn("ready", update.state())
 
     def test_no_install_while_another_maxedcode_of_this_install_runs(self):
         self.stage("99.0.0")

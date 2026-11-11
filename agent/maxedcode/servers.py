@@ -69,6 +69,21 @@ def is_local(host):
     return "." not in host
 
 
+def host_of(url):
+    """The host of a URL in lower case; "" when it has none or Python cannot read it ("http://pc[::1]" raised
+    ValueError out of every look at the server, a typed address became a traceback)."""
+    with suppress(ValueError):
+        return (urllib.parse.urlsplit(str(url or "")).hostname or "").lower()
+    return ""
+
+
+def port_in(url):
+    """The port written in a URL, or None (none given, or not readable)."""
+    with suppress(ValueError):
+        return urllib.parse.urlsplit(str(url or "")).port
+    return None
+
+
 def port_down(base, timeout=0.5):
     """True when a server on this PC / own network does not accept a TCP connection at all.
 
@@ -79,7 +94,7 @@ def port_down(base, timeout=0.5):
     if offline():
         return False
     u = urllib.parse.urlsplit(str(base))
-    host = u.hostname or ""
+    host = host_of(base)
     if not is_local(host):
         return False
     try:
@@ -107,7 +122,7 @@ def http(url, key="", body=None, timeout=3):
     """GET (or POST body) JSON; raises on any failure. Local addresses bypass the proxy."""
     if offline():
         raise OSError("offline (MAXEDCODE_OFFLINE)")
-    host = urllib.parse.urlsplit(url).hostname or ""
+    host = host_of(url)
     head = {**UA, **auth_headers(url, key), **({"Content-Type": "application/json"} if body is not None else {})}
     req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), headers=head)
     with (NOPROXY.open if is_local(host) else urllib.request.urlopen)(req, timeout=timeout) as r:
@@ -216,7 +231,7 @@ def model_ids(base, key="", timeout=3):
 
 def cloud_kind(base):
     """The cloud API kind of an address ("anthropic", "gemini" ...) or "" for any other server."""
-    host = (urllib.parse.urlsplit(str(base)).hostname or "").lower()
+    host = host_of(base)
     for h, kind in CLOUD_HOSTS.items():
         if host == h or host.endswith("." + h):
             return kind
@@ -245,18 +260,22 @@ def kind_of(base, key="", timeout=2, health=None):
         return "llamacpp"
     if isinstance(get(r + "/version", key, timeout), dict):
         return "vllm"
-    port = urllib.parse.urlsplit(str(base)).port
+    port = port_in(base)
     return {1234: "lmstudio", 11434: "ollama", 1337: "jan", 5000: "tgwui"}.get(port, "")
+
+
+def _list(value):
+    return value if isinstance(value, list) else []
 
 
 def _lms_models(base, key, timeout):
     d = get(root(base) + "/api/v0/models", key, timeout)
-    return [m for m in (d.get("data") or []) if isinstance(m, dict)] if isinstance(d, dict) else []
+    return [m for m in _list(d.get("data")) if isinstance(m, dict)] if isinstance(d, dict) else []
 
 
 def _ollama_loaded(base, key, timeout):
     d = get(root(base) + "/api/ps", key, timeout)
-    return [m for m in (d.get("models") or []) if isinstance(m, dict)] if isinstance(d, dict) else []
+    return [m for m in _list(d.get("models")) if isinstance(m, dict)] if isinstance(d, dict) else []
 
 
 def env_value(name):
@@ -304,14 +323,14 @@ def loaded_models(base, key="", kind="", timeout=3):
         d = get(root(base) + "/api/v0/models", key, timeout)
         if not isinstance(d, dict) or not isinstance(d.get("data"), list):
             return None
-        return [(str(m["id"]), m.get("loaded_context_length")) for m in d["data"]
+        return [(str(m["id"]), _n(m.get("loaded_context_length"))) for m in d["data"]
                 if isinstance(m, dict) and m.get("id") and m.get("state") == "loaded"
                 and m.get("type") in (None, "llm", "vlm")]
     if kind == "ollama":
         d = get(root(base) + "/api/ps", key, timeout)
         if not isinstance(d, dict):
             return None
-        return [(str(m.get("model") or m.get("name")), m.get("context_length")) for m in (d.get("models") or [])
+        return [(str(m.get("model") or m.get("name")), _n(m.get("context_length"))) for m in _list(d.get("models"))
                 if isinstance(m, dict) and (m.get("model") or m.get("name"))]
     return None
 
@@ -362,54 +381,64 @@ def _pick_model(want, on, kind=""):
     return None, None, f"{label} has no model loaded: load one in {label}"
 
 
+def _n(value):
+    """A window size a server reported -> a positive int, or None (a server may send "32768", null, junk)."""
+    with suppress(TypeError, ValueError, OverflowError):
+        n = int(value)
+        return n if 0 < n < 1 << 40 else None
+    return None
+
+
+def _d(value):
+    return value if isinstance(value, dict) else {}
+
+
 def context(base, key="", kind="", model=None, timeout=3, health=None, props=None):
     """The context window the server really allocated (per request slot), or None when it does not say."""
     r = root(base)
     if kind in ("strata", ""):
         health = get(r + "/health", key, timeout) if health is None else health
-        if isinstance(health, dict) and health.get("max_context"):
-            return int(health["max_context"])
+        n = _n(_d(health).get("max_context"))
+        if n:
+            return n
     if kind in ("strata", "llamacpp", ""):
-        props = get(r + "/props", key, timeout) if props is None else props
-        if isinstance(props, dict):
-            n = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
-            if n:
-                return int(n)
+        props = _d(get(r + "/props", key, timeout) if props is None else props)
+        n = _n(_d(props.get("default_generation_settings")).get("n_ctx") or props.get("n_ctx"))
+        if n:
+            return n
     if kind == "lmstudio":
         ms = _lms_models(base, key, timeout)
-        on = [m for m in ms if m.get("state") == "loaded" and (not model or m.get("id") == model)] or \
-            [m for m in ms if m.get("id") == model]
+        on = [m for m in ms if m.get("state") == "loaded" and (not model or m.get("id") == model)] or             [m for m in ms if m.get("id") == model]
         for m in on:
-            n = m.get("loaded_context_length") or (m.get("max_context_length") if m.get("state") == "loaded" else None)
+            n = _n(m.get("loaded_context_length") or (m.get("max_context_length") if m.get("state") == "loaded" else None))
             if n:
-                return int(n)
+                return n
         return None
     if kind == "ollama":
         on = [m for m in _ollama_loaded(base, key, timeout)
               if not model or model in (m.get("model"), m.get("name"))]
         for m in on:
-            if m.get("context_length"):
-                return int(m["context_length"])
+            if _n(m.get("context_length")):
+                return _n(m["context_length"])
         if model:
             show = None
             with suppress(Exception):
                 show = http(r + "/api/show", key, {"model": model}, timeout)
-            m = re.search(r"num_ctx\s+(\d+)", str((show or {}).get("parameters") or "")) if isinstance(show, dict) else None
-            if m:
-                return int(m.group(1))
-        n = env_value("OLLAMA_CONTEXT_LENGTH")
-        return int(n) if n.isdigit() else None
+            m = re.search(r"num_ctx\s+(\d+)", str(_d(show).get("parameters") or ""))
+            if m and _n(m.group(1)):
+                return _n(m.group(1))
+        return _n(env_value("OLLAMA_CONTEXT_LENGTH"))
     if kind == "koboldcpp":
-        d = get(r + "/api/extra/true_max_context_length", key, timeout)
-        if isinstance(d, dict) and d.get("value"):
-            return int(d["value"])
+        n = _n(_d(get(r + "/api/extra/true_max_context_length", key, timeout)).get("value"))
+        if n:
+            return n
     # vLLM (max_model_len), OpenRouter (context_length) and others put it into the model list
-    d = get(str(base).rstrip("/") + "/models", key, timeout)
-    for m in (d.get("data") or []) if isinstance(d, dict) else []:
+    d = _d(get(str(base).rstrip("/") + "/models", key, timeout)).get("data")
+    for m in d if isinstance(d, list) else []:
         if isinstance(m, dict) and (not model or m.get("id") == model):
-            n = m.get("max_model_len") or m.get("context_length") or m.get("loaded_context_length")
+            n = _n(m.get("max_model_len") or m.get("context_length") or m.get("loaded_context_length"))
             if n:
-                return int(n)
+                return n
     return None
 
 
@@ -507,13 +536,34 @@ def picked(kind):
     return None
 
 
+def strata_app():
+    """The Strata desktop app's install folder (Programs\\Strata with its BUNDLE.json or a program file; macOS:
+    Strata.app), or None. A folder left by an uninstall or a first setup that never finished (only `control`,
+    or ~/.strata with data/state.json "complete": false and an empty models folder) is no install."""
+    if sys.platform == "darwin":
+        return _app("Strata.app")
+    for env in ("LOCALAPPDATA", "ProgramFiles"):
+        d = Path(os.environ.get(env, "-"), "Programs" if env == "LOCALAPPDATA" else "", "Strata")
+        with suppress(OSError):
+            if (d / "BUNDLE.json").is_file() or any(p.suffix.lower() == ".exe" for p in d.iterdir()):
+                return d
+    return None
+
+
+def strata_program():
+    """Something of Strata that runs: the strata command, a source / terminal install (strata_source), a file the
+    user picked, or the desktop app -> its path, else None. Its data folder (~/.strata) alone says nothing."""
+    found = shutil.which("strata") or (str(strata_source() or "") or None) or picked("strata") or strata_app()
+    return str(found) if found else None
+
+
 def installed():
     """Model servers installed on this PC: [{"kind", "label", "path", "start": [cmd] | None, "how": text}]."""
     if os.name != "nt":
         return _installed_posix()
     home, out = Path.home(), []
     strata = shutil.which("strata")
-    sp = strata or _local("Programs", "Strata") or _exists(home, ".strata")
+    sp = strata_program()
     # Strata (github.com/Niko1221/Strata) starts from its sources / terminal install with `strata launch`
     # (bin\strata.cmd -> strata.py), which asks for the model - no flag picks the last one, `--preset NAME
     # --no-tui` needs a saved preset - so it opens in its own console. The desktop app is never started from here.
@@ -523,7 +573,8 @@ def installed():
         out.append({"kind": "strata", "path": str(src or sp), "console": True, "wait": 180,
                     "start": [*cli, "launch"] if cli else None,
                     "how": "strata launch (in the Strata folder: bin\\strata.cmd launch; "
-                           "no questions: strata launch --preset \"<name>\" --no-tui)"})
+                           "no questions: strata launch --preset \"<name>\" --no-tui)" if cli else
+                           "start the Strata app (Serving -> Start)"})
     lms = shutil.which("lms") or _exists(home, ".lmstudio", "bin", "lms.exe") or \
         _exists(home, ".cache", "lm-studio", "bin", "lms.exe") or picked("lmstudio")
     lp =_local("Programs", "LM Studio") or _local("Programs", "lm-studio") or lms or _exists(home, ".lmstudio")
@@ -780,7 +831,7 @@ def _installed_posix():
     home, out, mac = Path.home(), [], sys.platform == "darwin"
     strata = _which("strata")
     src = strata_source() or (Path(picked("strata")) if picked("strata") else None)
-    sp = strata or _exists(home, ".strata")
+    sp = strata or strata_program()
     if sp or src:
         # `strata launch` asks for the model in its own terminal: there is no console to open for it from here
         out.append({"kind": "strata", "path": str(src or sp), "start": None,

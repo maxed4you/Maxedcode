@@ -11,6 +11,7 @@ import asyncio
 import json
 import operator
 import inspect
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,12 @@ MAX_STRING_CHARS = 100_000
 MAX_COLLECTION_ITEMS = 10_000
 FETCH_TIMEOUT = 8
 FETCH_MAX_BYTES = 32_000
+# Values that grow without a statement per step: `x *= x` doubles an int's bits each time, `[a] * 10000`
+# holds the same list 10,000 times (its copy or its text is 10,000 lists), "%999999999s" is a 1 GB string.
+# The step budget never saw them: one step took minutes and the timeout cannot stop synchronous Python.
+MAX_INT_BITS = 100_000
+MAX_VALUE_UNITS = 2_000_000     # items + string characters of one value, a shared reference counted each time
+_FORMAT_SPEC = re.compile(r"%(?:\([^)]*\))?[-#0 +]*(\*|\d+)?(?:\.(\*|\d+))?")
 
 
 class _Return(Exception):
@@ -135,14 +142,63 @@ def _safe_value(value: Any, depth: int = 0) -> Any:
         return value if len(value) <= MAX_STRING_CHARS else value[:MAX_STRING_CHARS] + "…[string truncated]"
     if isinstance(value, dict):
         items = list(value.items())[:MAX_COLLECTION_ITEMS]
-        return {str(k): _safe_value(v, depth + 1) for k, v in items}
+        # int/float/bool/None keys stay as they are: `d = {1: "a"}; d[1]` was a KeyError (the key became "1")
+        return {(k if isinstance(k, (str, int, float)) or k is None else str(k)): _safe_value(v, depth + 1)
+                for k, v in items}
     if isinstance(value, (list, tuple)):
         return [_safe_value(v, depth + 1) for v in list(value)[:MAX_COLLECTION_ITEMS]]
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     if isinstance(value, range):
         return list(value[:MAX_COLLECTION_ITEMS])
+    if isinstance(value, (set, frozenset)):
+        # its items are hashable constants; as str(value), `for v in x` walked the characters of "{1, 2}"
+        return set(list(value)[:MAX_COLLECTION_ITEMS])
     return str(value)
+
+
+def _too_big(value, limit=MAX_VALUE_UNITS):
+    """More than `limit` items + string characters, a shared reference counted each time. Walks ~limit at most."""
+    total, stack = 0, [value]
+    while stack:
+        item = stack.pop()
+        total += 1 + (len(item) if isinstance(item, (str, bytes)) else 0)
+        if total > limit:
+            return True
+        if isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            stack.extend(item)
+    return False
+
+
+def _bounded(value):
+    if _too_big(value):
+        raise ValueError(f"value exceeds the code_mode size limit ({MAX_VALUE_UNITS:,} items and characters)")
+    return value
+
+
+def _binop(op_type, left, right):
+    """One arithmetic operation, refused before it runs when its result would be too big to build."""
+    op = _BINOPS.get(op_type)
+    if not op:
+        raise ValueError(f"unsupported binary operator: {op_type.__name__}")
+    if op_type is ast.Mult:
+        for sequence, multiplier in ((left, right), (right, left)):
+            if (isinstance(sequence, (str, bytes, list, tuple)) and isinstance(multiplier, int)
+                    and not isinstance(multiplier, bool)
+                    and (multiplier > MAX_COLLECTION_ITEMS or len(sequence) * multiplier > MAX_VALUE_UNITS)):
+                raise ValueError("sequence multiplication exceeds code_mode budget")
+        if (isinstance(left, int) and isinstance(right, int)
+                and left.bit_length() + right.bit_length() > MAX_INT_BITS):
+            raise ValueError(f"integer multiplication exceeds code_mode budget ({MAX_INT_BITS:,} bits)")
+    if op_type is ast.Mod and isinstance(left, (str, bytes)):
+        spec = left.decode("latin-1") if isinstance(left, bytes) else left
+        for width, precision in _FORMAT_SPEC.findall(spec):
+            if "*" in (width, precision) or int(width or 0) > MAX_STRING_CHARS or int(precision or 0) > MAX_STRING_CHARS:
+                raise ValueError("%-format width/precision exceeds code_mode budget")
+    return _safe_value(_bounded(op(left, right)))
 
 
 _BINOPS = {
@@ -186,7 +242,12 @@ class _Interpreter:
             raise RuntimeError(f"code_mode instruction budget exceeded ({MAX_STEPS})")
 
     def _print(self, *values, sep=" ", end="\n"):
-        self.output.append(sep.join(str(value) for value in values) + end)
+        text = ""
+        for k, value in enumerate(values):
+            text += (str(sep) if k else "") + str(value)
+            if len(text) > MAX_STRING_CHARS:
+                break
+        self.output.append(text + str(end))
         joined = "".join(self.output)
         if len(joined) > MAX_STRING_CHARS:
             self.output = [joined[:MAX_STRING_CHARS] + "…[stdout truncated]"]
@@ -219,10 +280,10 @@ class _Interpreter:
         if isinstance(node, ast.AugAssign):
             if not isinstance(node.target, ast.Name) or node.target.id not in self.env:
                 raise ValueError("augmented assignment requires an existing local variable")
-            op = _BINOPS.get(type(node.op))
-            if not op:
+            if type(node.op) not in _BINOPS:
                 raise ValueError("unsupported augmented assignment operator")
-            self.env[node.target.id] = _safe_value(op(self.env[node.target.id], await self.expr(node.value)))
+            # the same budget checks as `x = x * y`: `s *= 10**8` skipped them
+            self.env[node.target.id] = _binop(type(node.op), self.env[node.target.id], await self.expr(node.value))
             return
         if isinstance(node, ast.If):
             branch = node.body if await self.expr(node.test) else node.orelse
@@ -284,7 +345,8 @@ class _Interpreter:
             if len(node.elts) > MAX_COLLECTION_ITEMS:
                 raise ValueError("literal collection is too large")
             values = [await self.expr(item) for item in node.elts]
-            return values if isinstance(node, ast.List) else tuple(values) if isinstance(node, ast.Tuple) else set(values)
+            return _bounded(values if isinstance(node, ast.List) else tuple(values) if isinstance(node, ast.Tuple)
+                            else set(values))
         if isinstance(node, ast.Dict):
             if len(node.keys) > MAX_COLLECTION_ITEMS:
                 raise ValueError("literal dictionary is too large")
@@ -292,7 +354,7 @@ class _Interpreter:
                 raise ValueError("dictionary unpacking is unavailable in the confined interpreter")
             keys = [await self.expr(key) for key in node.keys]
             values = [await self.expr(value) for value in node.values]
-            return dict(zip(keys, values))
+            return _bounded(dict(zip(keys, values)))
         if isinstance(node, ast.Attribute):
             if node.attr.startswith("_"):
                 raise ValueError("private attributes are unavailable")
@@ -323,17 +385,14 @@ class _Interpreter:
                     raise ValueError("only safe builtins, fetch(), and tools.<name>(...) are callable")
             if isinstance(function, _ToolFunction):
                 return function(*args, **kwargs)
-            return function(*args, **kwargs)
+            result = function(*args, **kwargs)
+            # list(zip(a, a, a, ...)) of a big `a` is as big as all of them; str() of it is a giant string
+            return result if function is _safe_fetch else _bounded(result)
         if isinstance(node, ast.BinOp):
-            op = _BINOPS.get(type(node.op))
-            if not op:
+            if type(node.op) not in _BINOPS:
                 raise ValueError(f"unsupported binary operator: {type(node.op).__name__}")
             left, right = await self.expr(node.left), await self.expr(node.right)
-            if isinstance(node.op, ast.Mult):
-                for sequence, multiplier in ((left, right), (right, left)):
-                    if isinstance(sequence, (str, list, tuple)) and isinstance(multiplier, int) and not isinstance(multiplier, bool) and multiplier > MAX_COLLECTION_ITEMS:
-                        raise ValueError("sequence multiplication exceeds code_mode budget")
-            return _safe_value(op(left, right))
+            return _binop(type(node.op), left, right)
         if isinstance(node, ast.UnaryOp):
             op = _UNARY.get(type(node.op))
             if not op:
@@ -370,9 +429,12 @@ class _Interpreter:
             step = await self.expr(node.step) if node.step else None
             return slice(lower, upper, step)
         if isinstance(node, ast.JoinedStr):
-            pieces = []
+            pieces, size = [], 0
             for value in node.values:
                 pieces.append(str(await self.expr(value.value)) if isinstance(value, ast.FormattedValue) else str(value.value))
+                size += len(pieces[-1])
+                if size > MAX_STRING_CHARS:
+                    break        # the rest is cut anyway; building it first held every piece in memory
             return "".join(pieces)[:MAX_STRING_CHARS]
         if isinstance(node, ast.FormattedValue):
             return str(await self.expr(node.value))

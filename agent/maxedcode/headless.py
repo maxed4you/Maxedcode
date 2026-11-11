@@ -42,7 +42,7 @@ from .events import EventEmitter, EventMetrics
 from .tool_validation import (canonical_tool_name, normalize_tool_arguments, sanitize_tool_history,
                               validate_required_arguments, validate_tool_arguments, normalization_notice,
                               repair_tool_arguments, name_did_you_mean, unknown_tool_error, text_tool_calls,
-                              broken_text_call, BROKEN_CALL_FEEDBACK)
+                              broken_text_call, BROKEN_CALL_FEEDBACK, arguments_text, content_text)
 
 MAX_TURNS = 50
 ALLOWED = set()
@@ -189,8 +189,8 @@ async def inplace_summary(client, msgs, sid):
         return ""
     # Same tools and effort as the run: both are rendered into the system turn.
     try:
-        r = await client.chat.completions.create(model=MODEL, tools=tools, extra_body=summary_body(sid), **sampling_for(MODEL),
-            messages=wire(sanitize_tool_history(msgs, tools)) + [compact.inplace_request(state.COMPACT_PROMPT)])
+        r = llmretry.reply(await client.chat.completions.create(model=MODEL, tools=tools, extra_body=summary_body(sid), **sampling_for(MODEL),
+            messages=wire(sanitize_tool_history(msgs, tools)) + [compact.inplace_request(state.COMPACT_PROMPT)]))
     except Exception as e:
         print(f"[compact] in-place summary failed, using the transcript: {type(e).__name__}: {e}", file=sys.stderr)
         return ""
@@ -1039,8 +1039,8 @@ async def _run_impl(prompt, as_json=False, sid=None):
                     return await stream_completion(client, live, model=MODEL, messages=api_messages,
                                                    tools=tools, extra_body=eb, **sampling_for(MODEL), **kw)
                 # see config.HEADLESS_STREAM: a streamed reply made the server re-read it in the next request
-                return await client.chat.completions.create(model=MODEL, messages=api_messages, tools=tools,
-                                                            extra_body=eb, **sampling_for(MODEL), **kw), False
+                return llmretry.reply(await client.chat.completions.create(
+                    model=MODEL, messages=api_messages, tools=tools, extra_body=eb, **sampling_for(MODEL), **kw)), False
 
             def retrying(exc, attempt, wait):
                 print(f"(server failed: {llmretry.describe(exc)}; retry {attempt}/{llmretry.RETRIES} in {wait:g} s)",
@@ -1116,9 +1116,12 @@ async def _run_impl(prompt, as_json=False, sid=None):
             print("(reasoning got stuck repeating itself: stopped, this step again without thinking)", file=sys.stderr)
             no_think_next = True
             continue
-        calls = [{"id": tc.id, "type": "function", "function": {"name": tc.function.name,
-                 "arguments": tc.function.arguments or "{}"}} for tc in (m.tool_calls or [])]
-        content = m.content or ""
+        # name null, arguments as an object, content as a list of parts: shapes real servers send
+        calls = [{"id": tc.id or f"call_{T['model_calls']}_{i}", "type": "function",
+                  "function": {"name": str(getattr(tc.function, "name", None) or ""),
+                               "arguments": arguments_text(getattr(tc.function, "arguments", None))}}
+                 for i, tc in enumerate(m.tool_calls or [])]
+        content = content_text(m.content)
         if not calls and content:
             # The server left the call in the text: run it instead of printing raw XML/JSON as the answer.
             calls, content = text_tool_calls(content, f"textcall_{T['model_calls']}", tools)
@@ -1396,6 +1399,11 @@ async def run(prompt, as_json=False, sid=None):
     """Public runner that guarantees child-process cleanup on every return/cancellation path."""
     REQUEST[0] = str(prompt or "")
     LIVE.clear()
+    for stream in (sys.stdout, sys.stderr):
+        # A lone UTF-16 surrogate the model sent as an escape in its JSON crashed the run at the first print of
+        # it; escaped, a stream-json line stays valid JSON that decodes back to the same text.
+        with suppress(AttributeError, ValueError):
+            stream.reconfigure(errors="backslashreplace")
     try:
         return await _run_impl(prompt, as_json=as_json, sid=sid)
     except BaseException as error:
@@ -1403,9 +1411,9 @@ async def run(prompt, as_json=False, sid=None):
             # A connection error or a crash ends the run: keep what was done, so --continue can resume it.
             save_session(LIVE[0], LIVE[1], name=LIVE[2])
         import openai
-        if isinstance(error, openai.APIError):
-            # the server is down or refused (after llmretry's retries): one line, not a traceback; the window and
-            # the browser panel show the last stderr line as the reason
+        if isinstance(error, (openai.APIError, *llmretry.RETRYABLE)):
+            # the server is down or refused (after llmretry's retries; a stream that kept breaking, a reply with
+            # no choices): one line, not a traceback; the window and the browser panel show the last stderr line
             print(f"model server error ({config.BASE_URL}): {error}", file=sys.stderr, flush=True)
             raise SystemExit(1) from None
         raise

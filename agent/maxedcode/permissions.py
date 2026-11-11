@@ -16,18 +16,24 @@ from . import shelltool
 READ = ("read_file", "grep")
 WRITE = ("edit_file", "write_file", "patch", "apply_diff")
 
+# "git", its global options ("-C repo", "-c k=v", "--git-dir=x") and the space before the subcommand:
+# `git -C repo reset --hard` is the same reset as `git reset --hard`.
+_GIT = r"\bgit(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+"
 # Commands that need an explicit human OK even in AUTO mode / are refused in headless mode.
 DANGEROUS = [
     (r"\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^\n]*\|\s*(sh|bash|zsh|iex|Invoke-Expression|pwsh|powershell|python\d*)\b",
      "downloads and executes remote code"),
     (r"\b(iex|Invoke-Expression)\b[^\n]*(curl|wget|iwr|irm|DownloadString|Invoke-WebRequest)", "executes downloaded code"),
     (r"\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^\n]*(;|&&|\n)\s*(sh|bash|zsh|pwsh|powershell|python\d*|iex)\b", "downloads and then runs something"),
-    (r"\bgit\s+push\b[^\n]*(--force\b|--force-with-lease|\s-f\b)", "force push"),
-    (r"\bgit\s+update-ref\b[^\n]*\s-d\b", "deletes a Git reference"),
-    (r"\bgit\s+reset\s+--hard\b", "discards uncommitted work"),
-    (r"\bgit\s+clean\b[^\n]*\s-\w*f", "deletes untracked files"),
-    (r"\brm\s+-\w*[rf]\w*\s|\bRemove-Item\b[^\n]*-Recurse|\brmdir\s+/s|\bdel\s+/[sq]|\brd\s+/s", "recursive or forced delete"),
-    (r"\b(?:Remove-Item|del|erase|rm|rmdir)\b", "deletes existing files"),
+    # -f also inside combined short flags (`-fu`), and a `+branch` refspec forces that branch
+    (_GIT + r"push\b(?:[^\n]*(?:--force\b|--force-with-lease)|[^\n;|&]*\s(?:-[a-z]*f[a-z]*\b|\+\w))", "force push"),
+    (_GIT + r"update-ref\b[^\n]*\s-d\b", "deletes a Git reference"),
+    (_GIT + r"reset\b[^\n;|&]*\s--hard\b", "discards uncommitted work"),
+    (_GIT + r"clean\b[^\n]*\s-\w*f", "deletes untracked files"),
+    # `ri` / `rd` are PowerShell's own aliases of Remove-Item; only in command position (not a word in a text)
+    (r"\brm\s+-\w*[rf]\w*\s|\b(?:Remove-Item|(?<![\w-])ri)\b[^\n]*\s-r\w*\b|\brmdir\s+/s|\bdel\s+/[sq]|\brd\s+/s",
+     "recursive or forced delete"),
+    (r"\b(?:Remove-Item|del|erase|rm|rmdir)\b|(?:^|[;|&({\n])\s*(?:ri|rd)\b", "deletes existing files"),
     (r"\b(Format-Volume|diskpart|mkfs)\b|\bdd\s+if=", "disk-level operation"),
 ]
 DANGEROUS_DELETE = r"\b(?:Remove-Item|ri|del|erase|rm|rmdir|rd)\b"
@@ -153,20 +159,26 @@ def _is_cata_target(w):
             return True
     return False
 
+def _words(text):
+    """Words of a command; a quoted path with spaces ("C:\\Program Files") stays one word."""
+    return re.findall(r'"[^"]*"?|\'[^\']*\'?|\S+', text)
+
+
 def catastrophic_delete(command):
     """True when a delete command targets a drive root, the home folder or a system folder."""
     src = command or ""
-    for seg in re.split(r"[;&\n\r]+", src):
+    # A script block or a parenthesized command is a command too: `& { ri C:\ -r }`, `(Remove-Item C:\)`.
+    for seg in re.split(r"[;&\n\r{}]+", src):
         parts = [p for p in re.split(r"\|", seg)]
         for i, part in enumerate(parts):
-            words = part.strip().split()
+            words = _words(part.strip().lstrip("("))
             if not words or not re.fullmatch(_DEL_CMD, words[0], re.I):
                 continue
             targets = [w for w in words[1:] if not w.startswith("-") and not re.fullmatch(r"/[A-Za-z]+", w)]
-            if any(_is_cata_target(w) for w in targets):
+            if any(_is_cata_target(w.rstrip(")")) for w in targets):
                 return True
             # "Get-ChildItem C:\ -Recurse | Remove-Item": a delete fed by a listing of a root/home
-            if i > 0 and not targets and any(_is_cata_target(w) for w in parts[i - 1].split()[1:] if not w.startswith("-")):
+            if i > 0 and not targets and any(_is_cata_target(w) for w in _words(parts[i - 1])[1:] if not w.startswith("-")):
                 return True
     return False
 
@@ -247,8 +259,9 @@ def dangerous(name, command):
 _PYTHON_DESTRUCTIVE = re.compile(
     # Path.replace(target) takes one argument; str.replace(old, new) — in nearly every snippet — takes two.
     r"(?is)(?:\.unlink\s*\(|\.rmdir\s*\(|\.rename\s*\(|\.replace\s*\(\s*[^,()]*\)"
-    r"|\b(?-i:os|Path)\.(?:remove|unlink|rmdir|rename|replace)\s*\("      # case-sensitive: not a `path` variable
+    r"|\b(?-i:os|Path)\.(?:remove|removedirs|unlink|rmdir|rename|renames|replace)\s*\("   # case-sensitive: not a `path` variable
     r"|\bshutil\.(?:rmtree|move)\s*\("
+    r"|\brmtree\s*\("                       # `from shutil import rmtree`, `import shutil as sh; sh.rmtree(...)`
     r")"
 )
 _PYTHON_WRITES = re.compile(
@@ -311,6 +324,12 @@ def protected(key, read=False):
     keys = [key or ""]
     if ".." in keys[0]:      # Temp\..\..\Roaming\... got past the AppData rule
         keys.append(os.path.normpath(keys[0]))
+    if os.name == "nt":
+        # Windows writes "x\.env " and "x\.env." as ".env", and "x\.env::$DATA" / "x\.env:s" into that same file.
+        bare = re.sub(r"(?<=[^\\/:]):[^\\/]*$", "", keys[0])
+        bare = re.sub(r"(?<=[^\\/.])[ .]+(?=[\\/]|$)", "", bare)
+        if bare != keys[0]:
+            keys.append(bare)
     for p in PROTECTED:
         if any(re.search(str(p), k, re.I) for k in keys):
             return str(p)

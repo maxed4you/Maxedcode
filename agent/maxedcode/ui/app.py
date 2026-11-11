@@ -37,7 +37,7 @@ from ..tools import browser as browser_tool, runners, undo, web
 from ..tools.fs import attach_files, disk_text, tool_apply_diff, tool_edit, tool_glob, tool_grep, tool_read, tool_write
 from ..tool_validation import (text_tool_calls, canonical_tool_name, normalize_tool_arguments, sanitize_tool_history,
                                 validate_required_arguments, validate_tool_arguments, normalization_notice,
-                                broken_text_call, BROKEN_CALL_FEEDBACK)
+                                broken_text_call, BROKEN_CALL_FEEDBACK, content_text)
 from ..tools.mcp import MCP
 from ..tools.pysrc import tool_pysrc
 from ..shelltool import NAME as SHELL_TOOL
@@ -3771,7 +3771,7 @@ class AgentApp(App):
                                 await stream.aclose()   # stop generation on the server too
                             break
                 if d.content:
-                    content += d.content
+                    content += content_text(d.content)       # a list of parts from some servers
                     self.set_busy("Answering…")
                     if self._retract and not self._retract["answered"] and split_think(content)[1].strip():
                         self._retract["answered"] = True   # the answer is already on screen: Esc only interrupts
@@ -3781,9 +3781,12 @@ class AgentApp(App):
                     c = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
                     c["id"] = tc.id or c["id"]
                     if tc.function:
+                        # arguments as an object (Ollama-style) come whole: their JSON text, as the window's loop
+                        piece = tc.function.arguments
+                        piece = piece if isinstance(piece, str) else "" if piece is None else json.dumps(piece, ensure_ascii=False)
                         c["name"] += tc.function.name or ""
-                        c["args"] += tc.function.arguments or ""
-                        track_tool_call(c, tc.function.arguments or "")
+                        c["args"] += piece
+                        track_tool_call(c, piece)
                     self.set_busy(tool_call_status(c, len(calls), TITLES))
                 if time.monotonic() - last < 0.08:
                     continue

@@ -474,9 +474,9 @@ def pick_found(found, key):
 
 
 def strata_installed():
-    """Strata app / terminal on this PC (its install folder, its data folder or the strata command)."""
-    return bool(shutil.which("strata")) or bool(servers.strata_source()) or (Path.home() / ".strata").is_dir() or \
-        any(Path(os.environ.get(v, "-"), "Programs", "Strata").exists() for v in ("LOCALAPPDATA", "ProgramFiles"))
+    """Strata on this PC that can run (the strata command, its sources / terminal install, the desktop app).
+    Its data folder ~/.strata alone is no install: a first setup that never finished leaves it behind."""
+    return bool(servers.strata_program())
 
 
 def strata_key():
@@ -911,15 +911,16 @@ def app_window(dest, shortcuts):
     exe = app / "maxedcode.exe"
     if (app / "build-exe.ps1").exists():
         b = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(app / "build-exe.ps1")],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, errors="replace")
         say(f"app exe: {(b.stdout or b.stderr).strip()[:300]}", "ok" if b.returncode == 0 else "warn")
     r = None
     if exe.exists():
         with suppress(OSError):         # Windows refused to start it: the script window below
-            r = subprocess.run([str(exe), "--shortcuts" if shortcuts else "--check"], capture_output=True, text=True)
+            r = subprocess.run([str(exe), "--shortcuts" if shortcuts else "--check"], capture_output=True, text=True,
+                               errors="replace")
     if r is None or r.returncode != 0:
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(app / "maxedcode.ps1"),
-                            "-Shortcuts" if shortcuts else "-Check"], capture_output=True, text=True)
+                            "-Shortcuts" if shortcuts else "-Check"], capture_output=True, text=True, errors="replace")
     if r.returncode == 0:
         say("maxedcode app window ready" + (": \"maxedcode app\" on the desktop and in Start" if shortcuts else ""), "ok")
     else:
@@ -1015,12 +1016,16 @@ set "WD=%CD%"
 if /i "%CD%\"=="%~dp0" set "WD=%USERPROFILE%\Documents\maxedcode"
 if /i "%CD%"=="%SystemRoot%\System32" set "WD=%USERPROFILE%\Documents\maxedcode"
 if not exist "%WD%" mkdir "%WD%"
+rem a drive root ("C:\") ends in a backslash, which would eat the closing quote of -d "%WD%"
+if "%WD:~-1%"=="\" set "WD=%WD%."
+rem goto, not ( ) blocks: a ")" in a path (C:\Users\John (Work), C:\Program Files (x86)) would end a block.
 where wt >nul 2>nul
-if %errorlevel%==0 (
-  start "" wt -w new --title "maxedcode" -d "%WD%" "%PY%" "%~dp0program\local_agent.py"
-) else (
-  start "maxedcode" /d "%WD%" cmd /k ""%PY%" "%~dp0program\local_agent.py""
-)
+if errorlevel 1 goto console
+start "" wt -w new --title "maxedcode" -d "%WD%" "%PY%" "%~dp0program\local_agent.py"
+exit /b 0
+:console
+rem cmd /k drops the outer quotes; ^" keeps them out of this line's own quoting, so "&" in a path stays quoted.
+start "maxedcode" /d "%WD%" cmd /k ^""%PY%" "%~dp0program\local_agent.py"^"
 '''
 CONFIGURE = r'''@echo off
 chcp 65001 >nul
@@ -1078,8 +1083,10 @@ rem printed "The system cannot find the path specified" twice).
 "%PY%" "%~dp0..\install.py" --uninstall %2 %3 & chcp %CP% >nul & (goto) 2>nul & exit /b
 '''
 
-# double-click remover; one line, since maxed.bat deletes this file while it runs
-UNINSTALL_BAT = '@"{py}" "%~dp0..\\install.py" --uninstall %* & pause & (goto) 2>nul' + chr(10)   # CR: write_text
+# double-click remover; the call is the last line, since install.py deletes this file while it runs. chcp first:
+# cmd reads each line in the console code page, and the Python path may be non-ASCII (a Cyrillic user name).
+UNINSTALL_BAT = ('@chcp 65001 >nul' + chr(10) +
+                 '@"{py}" "%~dp0..\\install.py" --uninstall %* & pause & (goto) 2>nul' + chr(10))   # CR: write_text
 
 README = """maxedcode
 =========
@@ -1109,10 +1116,10 @@ FROM ANY FOLDER (setup adds program\\bin to PATH; open a NEW CMD or PowerShell w
 
 THE MODEL SERVER
   maxedcode talks to a model server on this PC or the network (Strata, LM Studio, Ollama, llama.cpp ...).
-  Change it: maxed configure, program\\bin\\configure.bat, or in the app: Settings - maxedcode.
+  Change it: maxed configure, program\\bin\\configure.bat, or in the app: Settings - Connection.
 
 BROWSER EXTENSION (the agent in your own Chrome / Edge)
-  In the app: Settings - maxedcode - Browser: turn it on, then "Open the step-by-step guide" shows how to
+  In the app: Settings - Browser: turn it on, then "Open the step-by-step guide" shows how to
   load it in Chrome / Edge, with the exact folder. The folder is:
     {root}\\program\\maxedcode\\chrome\\extension
   After an update click the round arrow on the extension card in chrome://extensions once.
@@ -1174,7 +1181,8 @@ def shortcut(dest):
           "$s.TargetPath=$env:MX_T;$s.WorkingDirectory=$env:MX_D;$s.Description='maxedcode in a terminal';"
           "$s.IconLocation=$env:SystemRoot+'\\System32\\shell32.dll,13';$s.Save()}")
     env = {**os.environ, "MX_T": str(root / "maxedcode CLI.bat"), "MX_D": str(root)}
-    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env, capture_output=True, text=True)
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env, capture_output=True, text=True,
+                       errors="replace")
     desktop = Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop"
     for name in OLD_LINKS:
         with suppress(OSError):
@@ -1325,10 +1333,10 @@ PYTHON
 
 THE MODEL SERVER
   maxedcode talks to a model server on this computer or the network (Strata, LM Studio, Ollama, llama.cpp ...).
-  Change it: maxed configure, or in the app: Settings - maxedcode.
+  Change it: maxed configure, or in the app: Settings - Connection.
 
 BROWSER EXTENSION (the agent in your own Chrome / Edge / Chromium)
-  In the app: Settings - maxedcode - Browser: turn it on, then "Open the step-by-step guide". The folder is:
+  In the app: Settings - Browser: turn it on, then "Open the step-by-step guide". The folder is:
     {root}/program/maxedcode/chrome/extension
 
 UPDATE: automatic (Settings - General), maxed --update, or run the installer again (same folder).
@@ -1820,8 +1828,9 @@ def move_legacy(old, dest):
         say(f"not moved (in use - close maxedcode and run setup again): {', '.join(stuck)}", "warn")
     if keep_ext and not ext.exists() and (dest / "maxedcode" / "chrome" / "extension").is_dir():
         ext.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(ext), str(dest / "maxedcode" / "chrome" / "extension")],
-                           capture_output=True, text=True)
+        # one string: list quoting leaves a path without spaces bare, and cmd would split it at an "&"
+        r = subprocess.run(f'cmd /c mklink /J "{ext}" "{dest / "maxedcode" / "chrome" / "extension"}"',
+                           capture_output=True, text=True, errors="replace")
         say("the browser extension keeps working: its old folder now points to the new one" if r.returncode == 0
             else f"reload the browser extension from {dest / 'maxedcode' / 'chrome' / 'extension'}",
             "ok" if r.returncode == 0 else "warn")
@@ -1903,7 +1912,7 @@ def start_hints(dest, links=True):
         say(f"app:            {maxed} app{where}")
         say(f"CLI:            {maxed}" + (" in any folder" + ("" if path_has(local_bin()) else " (in a NEW terminal)")
                                           if linked else ""))
-        say("change server:  maxed configure (or in the app: Settings - maxedcode)")
+        say("change server:  maxed configure (or in the app: Settings - Connection)")
         say("menu entries:   maxed shortcuts")
         say(f"how it works:   {root / 'README.txt'}")
         return
@@ -1913,7 +1922,7 @@ def start_hints(dest, links=True):
     if (root / "maxedcode app.bat").exists():
         say(f"app:            {link('maxedcode app')}{root / 'maxedcode app.bat'} or maxed app")
     say(f"CLI:            {link('maxedcode CLI')}{root / 'maxedcode CLI.bat'} or maxed in any folder")
-    say("change server:  maxed configure (or in the app: Settings - maxedcode)")
+    say("change server:  maxed configure (or in the app: Settings - Connection)")
     say("shortcuts gone: maxed shortcuts")
     say(f"how it works:   {root / 'README.txt'}")
 
@@ -1947,12 +1956,14 @@ def remove_shortcuts(root):
     ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $sh=New-Object -COM WScript.Shell;"
           "foreach($f in 'Desktop','Programs'){ $d=[Environment]::GetFolderPath($f);"
           "Get-ChildItem -LiteralPath $d -Filter 'maxedcode*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {"
-          "Write-Output ($_.FullName + '|' + $sh.CreateShortcut($_.FullName).TargetPath) } }")
+          "$l=$sh.CreateShortcut($_.FullName); Write-Output ($_.FullName + '|' + $l.TargetPath + '|' + $l.Arguments) } }")
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
     gone = []
     for line in r.stdout.decode("utf-8", "replace").splitlines():
-        lnk, _, target = line.strip().partition("|")
-        if target and _inside(target, root):
+        lnk, _, rest = line.strip().partition("|")
+        target, _, args = rest.partition("|")
+        # the app shortcut without the exe runs conhost.exe with -File "<root>\...\maxedcode.ps1"
+        if target and (_inside(target, root) or any(_inside(a, root) for a in re.findall(r'"([^"]+)"', args))):
             with suppress(OSError):
                 Path(lnk).unlink()
                 gone.append(Path(lnk).stem)

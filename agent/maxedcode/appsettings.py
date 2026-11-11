@@ -153,6 +153,18 @@ def remember(user=None, cfg=None):
         _write(RECENT_FILE, [entry] + [x for x in old if not _same(x["base_url"], base)][:RECENT - 1])
 
 
+def started_here(base):
+    """{"kind", "label"} when the agent's server is the one "Run a model" started last (launch.json "ours"), so
+    Connection says where the model comes from and why; None otherwise. Reads the file only, asks nothing."""
+    with suppress(Exception):
+        from . import launch, servers
+        o = launch.ours()
+        if o and _same(servers.root(o["base"]), servers.root(base)):
+            kind = o.get("server") or o.get("kind") or ""
+            return {"kind": kind, "label": servers.LABELS.get(kind, kind), "model": o.get("model")}
+    return None
+
+
 def get():
     user, cfg, state = _read(USER_SETTINGS), _read(CONFIG_FILE), _read(config.STATE_FILE)
     remember(user, cfg)
@@ -191,6 +203,7 @@ def get():
     # nothing chose a server yet (a git clone started as the window): the page opens the first-start picker
     setup = not (values["base_url"] or os.environ.get("AGENT_BASE_URL"))
     server["kind"] = detected.get("kind", "")
+    server["started_here"] = started_here(config.BASE_URL)
     # the ones before the current server; a cloud one needs its key again (keys are not kept here)
     server["recent"] = [{**x, "label": servers.LABELS.get(x["server"], "") or x["server"],
                          "cloud": bool(servers.cloud_kind(x["base_url"]))}

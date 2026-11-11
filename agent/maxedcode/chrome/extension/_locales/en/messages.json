@@ -18,7 +18,7 @@
     "message": "Not connected to maxedcode"
   },
   "notConnectedSub": {
-    "message": "Turn the browser on in maxedcode: Settings → maxedcode → Browser."
+    "message": "Turn the browser on in maxedcode: Settings → Browser."
   },
   "offBanner": {
     "message": "maxedcode cannot see or use this browser now."

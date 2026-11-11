@@ -1,9 +1,11 @@
 """One model request read as a stream (headless loop and subagents share it)."""
+import json
 import time
 from contextlib import suppress
 from types import SimpleNamespace
 
 from . import llmretry
+from .tool_validation import content_text
 from .util import think_loop
 
 STREAM_USAGE = [True]    # stream_options.include_usage; off once a server rejects the field
@@ -55,7 +57,7 @@ async def stream_completion(client, on_delta=None, **kw):
     t0 = time.monotonic()
     res = await client.chat.completions.create(stream=True, **kw)
     if hasattr(res, "choices"):
-        return res, False
+        return llmretry.reply(res), False
     content, reasoning, calls, usage, finish, looped, checked = "", "", {}, None, None, False, 0
     first, timings = None, None   # time to the first token (prompt read), the server's own timings (llama.cpp)
     try:
@@ -79,13 +81,14 @@ async def stream_completion(client, on_delta=None, **kw):
                         looped = True
                         break
             if d.content:
-                content += d.content
+                content += d.content if isinstance(d.content, str) else content_text(d.content)
             for tc in d.tool_calls or []:
                 c = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
                 c["id"] = tc.id or c["id"]
                 if tc.function:
                     c["name"] += tc.function.name or ""
-                    c["args"] += tc.function.arguments or ""
+                    a = tc.function.arguments or ""        # an object from some servers, not a JSON string
+                    c["args"] += a if isinstance(a, str) else json.dumps(a, ensure_ascii=False)
             if on_delta and (r or d.content):
                 with suppress(Exception):     # a broken live view never stops the request
                     on_delta(reasoning, content)

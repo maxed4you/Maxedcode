@@ -63,6 +63,11 @@ POPEN_GROUP = {} if os.name == "nt" else {"start_new_session": True}
 IDLE_GRACE = 90               # seconds without a page request (an open window pings every 30 s)
 
 
+def is_token(value):
+    """The launcher's token? (as bytes: compare_digest raises on a str with non-ASCII characters)"""
+    return secrets.compare_digest(str(value).encode("utf-8", "replace"), TOKEN.encode("utf-8"))
+
+
 def agent_env(**extra):
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(AGENT_DIR)}
     env.update({k: v for k, v in extra.items() if v})
@@ -591,14 +596,17 @@ def launch_begin(data):
             with suppress(ValueError):
                 obj = json.loads(line)
                 if obj.get("done"):
-                    job["result"] = obj
+                    with LAUNCH_LOCK:       # a "done" still in the pipe of a cancelled start: it stays cancelled
+                        if job["result"] is None:
+                            job["result"] = obj
                 elif obj.get("text"):
                     job["lines"].append(obj["text"])
                     job["pct"] = obj.get("pct")
         proc.wait()
-        if job["result"] is None:
-            job["result"] = {"ok": False, "error": f"exit {proc.returncode}"}
-        job["ended"] = time.monotonic()
+        with LAUNCH_LOCK:
+            if job["result"] is None:
+                job["result"] = {"ok": False, "error": f"exit {proc.returncode}"}
+            job.setdefault("ended", time.monotonic())
     threading.Thread(target=pump, daemon=True).start()
     return launch_job()
 
@@ -906,8 +914,30 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── plumbing ──
     def authorized(self):
-        jar = cookies.SimpleCookie(self.headers.get("Cookie") or "")
-        return COOKIE in jar and secrets.compare_digest(jar[COOKIE].value, TOKEN)
+        try:
+            jar = cookies.SimpleCookie(self.headers.get("Cookie") or "")
+        except cookies.CookieError:
+            return False
+        return COOKIE in jar and is_token(jar[COOKIE].value)
+
+    def guarded(self, route):
+        """A request that fails gets a JSON error instead of a dropped connection (the page waited for an
+        answer); a page that went away is no error."""
+        self.replied = False            # one handler serves every request of a kept-alive connection
+        try:
+            route()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
+            if not getattr(self, "replied", False):
+                with suppress(Exception):
+                    self.send(500, {"error": f"{type(error).__name__}: {error}"})
+
+    def send_response(self, code, message=None):
+        self.replied = True
+        super().send_response(code, message)
 
     def send(self, status, body=b"", ctype="application/json; charset=utf-8", extra=None):
         if isinstance(body, (dict, list)):
@@ -925,16 +955,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
-        if not n:
+        if n <= 0:                          # -1 read until the client closed: the request hung
             return {}
+        if n > UPLOAD_LIMIT:                # read(n) takes n bytes of memory before a byte comes
+            raise ValueError("body too big")
         data = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
         return data if isinstance(data, dict) else {}
 
     # ── routes ──
     def do_GET(self):
+        self.guarded(self.get)
+
+    def do_POST(self):
+        self.guarded(self.post)
+
+    def get(self):
         url = urlparse(self.path)
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
-        if url.path == "/" and query.get("t") and secrets.compare_digest(query["t"], TOKEN):
+        if url.path == "/" and query.get("t") and is_token(query["t"]):
             return self.send(302, "", extra={"Location": "/",
                                              "Set-Cookie": f"{COOKIE}={TOKEN}; Path=/; HttpOnly; SameSite=Strict"})
         if not self.authorized():
@@ -1014,12 +1052,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, search(query.get("q")))
         return self.static(url.path)
 
-    def do_POST(self):
+    def post(self):
         url = urlparse(self.path)
         path = url.path
         if path == "/api/quit":
             # the launcher (it has the token, not the cookie): its window closed
-            if not secrets.compare_digest((parse_qs(url.query).get("t") or [""])[-1], TOKEN):
+            if not is_token((parse_qs(url.query).get("t") or [""])[-1]):
                 return self.send(401, {"error": "unauthorized"})
             QUIT_WHEN_IDLE.set()
             if parse_qs(url.query).get("browser"):
@@ -1230,6 +1268,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(413, {"error": f"files up to {UPLOAD_LIMIT // 1_000_000} MB"})
         raw = self.rfile.read(n)
         name = Path(unquote(self.headers.get("X-File-Name") or "file")).name or "file"
+        # a name the disk cannot take ("a:b" is an alternate stream, NUL a device, "\0" an error): a safe copy name
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "file"
+        if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?", name):
+            name = "_" + name
         sha = hashlib.sha256(raw).hexdigest()
         target = ATTACHMENTS / sha[:2] / sha / name
         target.parent.mkdir(parents=True, exist_ok=True)

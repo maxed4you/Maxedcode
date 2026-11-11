@@ -5,10 +5,14 @@ import io
 import json
 import os
 import plistlib
+import re
+import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -279,6 +283,159 @@ class UninstallTests(unittest.TestCase):
             self.assertEqual(install.run_uninstall(), 1)
         files.assert_not_called()
         self.assertTrue(self.root.exists())
+
+    @WINDOWS_ONLY
+    def test_app_shortcut_of_the_script_window_goes_too(self):
+        # without the exe the "maxedcode app" shortcut runs conhost.exe; its install is in the arguments
+        desk = self.root.parent / "desk"
+        desk.mkdir()
+        mine, other = desk / "maxedcode app.lnk", desk / "maxedcode CLI.lnk"
+        for f in (mine, other):
+            f.write_text("x", encoding="utf-8")
+        ps1 = self.root / "program" / "desktop" / "app" / "maxedcode.ps1"
+        out = (f"{mine}|C:\\Windows\\System32\\conhost.exe|--headless powershell.exe -STA -File \"{ps1}\"\r\n"
+               f"{other}|C:\\Other\\maxedcode CLI.bat|\r\n")
+        done = subprocess.CompletedProcess([], 0, out.encode("utf-8"), b"")
+        with patch.object(install.subprocess, "run", return_value=done):
+            self.assertEqual(install.remove_shortcuts(self.root), ["maxedcode app"])
+        self.assertFalse(mine.exists())
+        self.assertTrue(other.exists())                 # another install's shortcut stays
+
+
+# a Windows user / folder name with everything cmd cares about: spaces, Cyrillic, ( ), &, ' and !
+ODD = "Иван Петров (Work) & Co's!"
+# stands in for local_agent.py / install.py: which Python ran it, in which folder, with which arguments
+STUB = "import os, sys; print('RAN', sys.executable, os.getcwd(), sys.argv[1:], sep='|')\n"
+NO_WINDOW = 0x08000000          # CREATE_NO_WINDOW: cmd gets a console of its own (chcp works), nothing shows
+
+
+class LauncherQuotingTests(unittest.TestCase):
+    """The .bat templates: every path (the install folder, the Python) quoted, the UTF-8 code page before a line
+    with a literal path, no path inside a ( ) block (a ")" in it ends the block)."""
+
+    def test_paths_are_quoted_and_utf8_comes_first(self):
+        for name in ("LAUNCH", "CONFIGURE", "MAXED", "SHORTCUTS", "UNINSTALL_BAT", "APP_LAUNCH"):
+            text = getattr(install, name)
+            lines = text.splitlines()
+            if "{py}" in text:
+                first = next(i for i, line in enumerate(lines) if "{py}" in line)
+                self.assertTrue(any("chcp 65001" in line for line in lines[:first]), name)
+            for token in ("{py}", "%PY%", "%~dp0"):
+                for m in re.finditer(re.escape(token), text):
+                    self.assertTrue(text[:m.start()].endswith(('"', '"PY=')), f"{name}: {token} without quotes")
+            self.assertIsNone(re.search(r"\(\s*\n[^)]*(%PY%|%~dp0)", text), f"{name}: a path inside ( )")
+
+
+@WINDOWS_ONLY
+class OddFolderInstallTests(unittest.TestCase):
+    """A real install into a folder named like ODD, with a Python under such a folder too, then its launchers run by
+    cmd.exe in the OEM code page of an English Windows (437): they start the right file with the right Python."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp()).resolve()     # %TEMP% may be a short 8.3 path
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.odd = self.base / ODD
+        self.work = self.odd / "work (1) & Ко"
+        self.work.mkdir(parents=True)
+        self.home = self.base / "home"
+        self.home.mkdir()
+        # the Python as if it lived in such a folder: a junction to this one (removed before the folder goes)
+        self.py = Path(sys.executable)
+        real = Path(sys.base_prefix) / "python.exe"
+        link = self.odd / "Python 3 (x86) & Ко"
+        with suppress(OSError, AttributeError):
+            import _winapi
+            _winapi.CreateJunction(str(real.parent), str(link))
+            self.addCleanup(os.rmdir, link)
+            self.py = link / "python.exe"
+        # the launchers' children: never the real profile (USERPROFILE is Path.home() and Documents), %TEMP% or update
+        self.env = {**os.environ, "USERPROFILE": str(self.home), "TEMP": str(self.base), "TMP": str(self.base),
+                    "PYTHONIOENCODING": "utf-8", "MAXEDCODE_OFFLINE": "1", "MAXEDCODE_NO_UPDATE": "1"}
+
+    def cmd(self, bat, *args, stdin=b""):
+        """bat with args, run from self.work by a cmd.exe that starts in code page 437 (as a double-click or a new
+        CMD window starts in the OEM one; chcp in the same cmd is not the same) -> (exit code, output)."""
+        line = " ".join([f'cmd /d /c call "{bat}"', *args])
+        r = subprocess.run(f'cmd /d /s /c "chcp 437 >nul & {line}"', cwd=str(self.work), env=self.env, input=stdin,
+                           capture_output=True, creationflags=NO_WINDOW, timeout=60)
+        return r.returncode, r.stdout.decode("utf-8", "replace") + r.stderr.decode("utf-8", "replace")
+
+    def ran(self, out):
+        """What STUB printed -> (python, cwd, arguments)."""
+        m = re.search(r"^RAN\|(.*)\|(.*)\|(\[.*\])\s*$", out, re.M)
+        self.assertIsNotNone(m, out)
+        return m.group(1), m.group(2), m.group(3)
+
+    def test_launchers_from_an_odd_folder(self):
+        root = self.odd / "maxedcode"
+        dest = root / "program"
+        StrataDefaultTests.setUp(self)                    # no real ~\.maxedcode, bridge, app window
+        StrataDefaultTests.silent(self, root)
+        self.assertEqual(sorted(f.name for f in root.iterdir()),
+                         ["README.txt", "maxedcode CLI.bat", "maxedcode app.bat", "program"])
+        bats = [root / "maxedcode CLI.bat", root / "maxedcode app.bat", dest / "desktop" / "maxedcode-app.bat",
+                *(dest / "bin").glob("*.bat")]
+        for bat in bats:                                  # every file a launcher names is there
+            text = bat.read_text(encoding="utf-8")
+            for rel in re.findall(r'%~dp0([^"]*)"', text):
+                if not rel.endswith("maxedcode.exe"):     # built by app_window, not in this test
+                    self.assertTrue(Path(os.path.normpath(f"{bat.parent}\\{rel}")).exists(), f"{bat.name}: {rel}")
+            if bat.parent.name == "bin":
+                self.assertIn(sys.executable, text)
+
+        with patch("sys.executable", str(self.py)), redirect_stdout(io.StringIO()):
+            install.write_launchers(dest)
+        (dest / "local_agent.py").write_text(STUB, encoding="utf-8")
+        (dest / "desktop" / "maxedcode-app.bat").write_text("@echo off\necho APP %*\n", encoding="utf-8")
+        maxed = dest / "bin" / "maxed.bat"
+        rc, out = self.cmd(maxed, "--print", '"a b"', '"x)y"')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.ran(out), (str(self.py), str(self.work), "['--print', 'a b', 'x)y']"))
+        self.assertIn("APP", self.cmd(maxed, "app")[1])
+        self.assertIn("APP z", self.cmd(root / "maxedcode app.bat", "z")[1])
+
+        # maxedcode CLI.bat opens a new window; here both of its ways run in this one
+        cli = (root / "maxedcode CLI.bat").read_text(encoding="utf-8")
+        ways = {"console": cli.replace("where wt", "where maxedcode-no-wt")
+                              .replace('start "maxedcode" /d "%WD%" cmd /k', "cmd /d /c"),
+                "wt": cli.replace("if errorlevel 1 goto console", "rem")
+                         .replace('start "" wt -w new --title "maxedcode" -d "%WD%" ', "")}
+        for way, text in ways.items():
+            self.assertEqual(len({text, cli}), 2, way)    # the template still has these lines
+            bat = root / f"cli {way}.bat"
+            bat.write_text(text, encoding="utf-8", newline="\r\n")
+            rc, out = self.cmd(bat)
+            bat.unlink()
+            self.assertEqual(self.ran(out), (str(self.py), str(self.work), "[]"), f"{way}: {out}")
+
+        # maxed uninstall: the real install.py removes the folder it lives in, the folder around it stays
+        rc, out = self.cmd(maxed, "uninstall", "--yes")
+        self.assertIn("maxedcode is removed", out)
+        self.assertFalse(root.exists(), out)
+        self.assertTrue(self.work.exists())
+
+    def test_double_click_uninstall_with_a_non_ascii_python(self):
+        dest = self.odd / "mx" / "program"
+        dest.mkdir(parents=True)
+        with patch("sys.executable", str(self.py)), redirect_stdout(io.StringIO()):
+            install.write_launchers(dest)
+        (dest / "install.py").write_text(STUB, encoding="utf-8")
+        rc, out = self.cmd(dest / "bin" / "uninstall.bat", "--yes", stdin=b"\r\n")
+        self.assertEqual(self.ran(out)[0::2], (str(self.py), "['--uninstall', '--yes']"), out)
+
+    def test_old_extension_folder_link_with_an_ampersand(self):
+        # move_legacy links the old extension folder to the new one; a path without spaces is not quoted by
+        # subprocess, and cmd split it at the "&"
+        old, dest = self.base / "Co&Ко" / ".maxedcode", self.base / "new" / "program"
+        (old / "maxedcode" / "chrome" / "extension").mkdir(parents=True)
+        (old / "local_agent.py").write_text("", encoding="utf-8")
+        (dest / "maxedcode" / "chrome" / "extension").mkdir(parents=True)
+        (dest / "maxedcode" / "chrome" / "extension" / "manifest.json").write_text("{}", encoding="utf-8")
+        with patch.object(install, "browsers_using", return_value=True), redirect_stdout(io.StringIO()):
+            install.move_legacy(old, dest)
+        ext = old / "maxedcode" / "chrome" / "extension"
+        self.assertTrue((ext / "manifest.json").exists())
+        os.rmdir(ext)                                     # the junction, before the folder goes
 
 
 class PosixInstallTests(unittest.TestCase):

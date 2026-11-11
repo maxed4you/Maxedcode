@@ -65,6 +65,12 @@ SUITES = [
     ("macOS / Linux: clipboard, keys, servers, browser host, app window, terminal", "test_posix_platform.py"),
     ("LM Studio / Ollama: the loaded model and its window, never a second model loaded", "test_loaded_model.py"),
     ("Run a model on this PC: contexts, GGUF files, Strata flags, ports, LM Studio start", "test_launch.py"),
+    ("Model starts are done only when the model is in memory: LM Studio, Strata, llama.cpp, Ollama, scripts", "test_model_loading.py"),
+    ("Agent loop vs a chaotic fake model server: broken calls, cut streams, 5xx, odd content, loops, files", "test_stress_agent.py"),
+    ("Stress: model servers that answer anything, addresses in any form, launch.json from many writers, settings", "test_stress_servers.py"),
+    ("What a walk through the window found: refused steps, section names, a running server without its program", "test_ui_walkthrough.py"),
+    ("Stress: the app window's HTTP server under concurrent, malformed and unauthorized requests; start jobs, turns", "test_stress_webapp.py"),
+    ("Stress: file tools, PowerShell prep, code_mode, dangerous commands, argument repair, real PowerShell", "test_stress_tools.py"),
 ]
 TIMES = Path(tempfile.gettempdir()) / "maxedcode-test-times.json"   # the last run's seconds per suite
 

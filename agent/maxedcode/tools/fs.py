@@ -23,6 +23,7 @@ DECODE_WHOLE_MAX = 8_000_000   # read_file decodes files up to this size at once
 READ_LINE_MAX = 2000           # one shown line at most, like DeepSeek Harness read-render
 GREP_FILES_MAX = 20000         # python grep fallback: files walked at most
 GREP_TIME_MAX = 30             # ... and seconds (ripgrep has the same 30 s timeout above)
+GLOB_WALK_MAX = 200_000        # glob: folder entries walked at most
 _TOOL_OUTPUT_RE = re.compile(r"^tool-output-\d+-\d+(?:-\d+)?\.txt$")
 
 
@@ -432,6 +433,9 @@ def decode_text(raw):
     Old .bat/.txt files on Russian Windows are cp1251: decoded with errors="replace" they showed "������",
     and edit_file crashed on them, so a later write_file lost the text. Newlines are left as they are."""
     enc = _bom_encoding(raw[:4])
+    if raw[:2] == b"\xfe\xff":
+        # Big-endian: as "utf-16" the next write came out little-endian (every byte of the file changed).
+        return raw[2:].decode("utf-16-be", "replace"), "utf-16-be"
     if enc != "utf-8":
         return raw.decode(enc, "replace"), enc
     try:
@@ -447,7 +451,7 @@ def decode_text(raw):
 def encode_text(path, text, enc):
     """(bytes, "") in the file's own encoding, or (None, error) when the text does not fit that encoding."""
     try:
-        return text.encode(enc or "utf-8"), ""
+        return (b"\xfe\xff" if enc == "utf-16-be" else b"") + text.encode(enc or "utf-8"), ""
     except UnicodeEncodeError as e:
         bad = text[e.start:e.end]
         return None, (f"Error: {shown(path)} is {enc} text and {bad!r} cannot be stored in {enc}; "
@@ -594,9 +598,19 @@ def _resolve_path_arg(fn):
     return wrapper
 
 
+def _line_arg(value):
+    """A line-number argument as an int; None when absent or not a number ("abc", NaN, inf, a list).
+
+    Such a value got past argument repair and int() raised inside the tool (a list even as the cache key)."""
+    with suppress(TypeError, ValueError, OverflowError):
+        return None if value is None else int(value)
+    return None
+
+
 @_resolve_path_arg
 def tool_read(path, start=None, end=None, offset=None, limit=None):
     """Read with a small LRU cache; any write through this module invalidates it."""
+    start, end, offset, limit = (_line_arg(x) for x in (start, end, offset, limit))
     result = _tool_read_cached(path, start, end, offset, limit)
     if not str(result).startswith("Error") and Path(path).is_file():
         mark_seen(path)
@@ -706,9 +720,13 @@ def _fuzzy_hint(search, content):
             f"<did_you_mean line=\"{match['line']}\">\n{shown}\n</did_you_mean>")
 
 
-def apply_edits_dry_run(original, edits, filename="<memory>"):
-    """Apply exact edits to memory and validate before touching disk; return (text, error)."""
-    text = str(original).replace("\r\n", "\n").replace("\r", "\n")
+def apply_edits_dry_run(original, edits, filename="<memory>", normalized=False):
+    """Apply exact edits to memory and validate before touching disk; return (text, error).
+
+    Only CRLF becomes LF: a lone CR inside a line (a progress-bar log, a stray byte) is file content, and
+    turning it into a line break changed lines the edit never touched. normalized=True: original already
+    has LF line ends (a second pass made "\\r\\r\\n" lose its first CR)."""
+    text = str(original) if normalized else str(original).replace("\r\n", "\n")
     for index, edit in enumerate(edits or [], 1):
         if not isinstance(edit, dict):
             return None, f"Error: edit {index} must be an object"
@@ -717,7 +735,8 @@ def apply_edits_dry_run(original, edits, filename="<memory>"):
             return None, f"Error: edit {index}: old_text must be a non-empty string"
         if not isinstance(new, str):
             return None, f"Error: edit {index}: new_text must be a string"
-        old, new = old.replace("\r\n", "\n").replace("\r", "\n"), new.replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized:
+            old, new = old.replace("\r\n", "\n"), new.replace("\r\n", "\n")
         count = text.count(old)
         if count != 1:
             hint = _fuzzy_hint(old, text) if count == 0 else ""
@@ -869,7 +888,7 @@ def tool_edit(path, old, new):
         more = " …" if len(_line_matches(t, old)) > 20 else ""
         return _edit_failure(path, f"Error: old_text found {n} times at {positions}{more}; it must occur exactly once. Add neighbouring lines so the fragment is unique.")
     first = t[:t.index(old)].count("\n") + 1
-    updated, error = apply_edits_dry_run(t, [{"old_text": old, "new_text": new}], filename=str(p))
+    updated, error = apply_edits_dry_run(t, [{"old_text": old, "new_text": new}], filename=str(p), normalized=True)
     if error:
         return error
     out, error = encode_text(path, updated.replace("\n", "\r\n") if crlf else updated, enc)
@@ -1166,7 +1185,8 @@ def tool_grep(pattern, path=".", glob=None, context=None, output_mode="content")
             cmd += ["--glob", g]
         if context and mode == "content":
             cmd += ["-C", str(context)]
-        cmd += [pattern, str(root)]
+        # -e / --: a pattern or a path that starts with "-" is never read as an option (`--pre=prog` runs prog)
+        cmd += ["-e", pattern, "--", str(root)]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=30, text=True, encoding="utf-8")
             lines = r.stdout.splitlines()
@@ -1220,7 +1240,11 @@ def tool_grep(pattern, path=".", glob=None, context=None, output_mode="content")
             continue
         if _bom_encoding(raw[:4]) == "utf-8" and b"\0" in raw[:2048]:
             continue
-        lines = decode_text(raw)[0].splitlines()
+        # The same lines as read_file: splitlines() also broke at \f, \x1c, U+2028..., so every line number after
+        # such a character pointed read_file / start_line at the wrong place.
+        lines = decode_text(raw)[0].replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if lines[-1] == "":
+            lines.pop()
         hits = [i for i, line in enumerate(lines, 1) if rx.search(line)]
         if not hits:
             continue
@@ -1319,7 +1343,14 @@ def tool_glob(pattern, path=".", limit=100):
     found = []
     # "**/" means zero or more folders: fnmatch needs a "/" for it, so "**/*" missed files in the root.
     patterns = {q for p in name_patterns(pattern) for q in (p, p.replace("**/", ""))}
+    # Bounded like grep: "/" or "C:/**/*.x" with no match walked the whole drive (76 s, no answer at all).
+    started, walked, stop = time.monotonic(), 0, ""
     for directory, dirs, files in os.walk(root):
+        walked += len(files) + 1
+        if walked > GLOB_WALK_MAX or time.monotonic() - started > GREP_TIME_MAX:
+            stop = (f"\n[search stopped after {walked:,} entries ({'entry' if walked > GLOB_WALK_MAX else 'time'} "
+                    "limit): the results are partial. Narrow path or the pattern]")
+            break
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not blocked(Path(directory) / d, read=True))
         for filename in sorted(files):
             item = Path(directory) / filename
@@ -1332,6 +1363,8 @@ def tool_glob(pattern, path=".", limit=100):
                     return "\n".join(found) + "\n...[100-path limit reached; narrow the glob pattern]"
     # The model often looks up a named file with a glob ("slow.py") and reads it on the next turn: a single exact
     # file without wildcards is returned with its content right away — one model turn less.
+    if stop:
+        return ("\n".join(found) if found else "No matches in the folders searched.") + stop
     if len(found) == 1 and not any(ch in pattern.replace("**/", "") for ch in "*?["):
         if Path(found[0]).suffix.lower() in IMAGE_EXTS and not NO_VISION:
             # Only read_file attaches the picture; an inlined text stub made the model describe an image it never saw.
@@ -1400,9 +1433,14 @@ def tool_apply_diff(path, diff_text):
     if enc is None:
         return not_text_error(path)
     crlf = _eol(raw) == "\r\n"
-    original_lines = raw.replace("\r\n", "\n").splitlines()
-    had_final_newline = raw.endswith(("\n", "\r"))
-    diff_lines = diff_text.replace("\r\n", "\n").splitlines()
+    # split("\n"), not splitlines(): that also splits at \f, \v, \x1c-\x1e, \x85, U+2028/9 and a lone CR, and
+    # the whole file came back with those characters turned into line breaks.
+    text = raw.replace("\r\n", "\n")
+    had_final_newline = text.endswith("\n")
+    original_lines = text.split("\n")[:-1] if had_final_newline else text.split("\n") if text else []
+    diff_lines = diff_text.replace("\r\n", "\n").split("\n")
+    if diff_lines[-1] == "":
+        diff_lines.pop()
     hunks = []
     i = 0
     while i < len(diff_lines):
@@ -1412,12 +1450,15 @@ def tool_apply_diff(path, diff_text):
             if not m and re.match(r"^@@ *[-+\d]", line):
                 return f"Error: malformed unified diff hunk header: {line[:120]}"
             # Bare "@@" / "@@ def f(): @@" (Aider format, no line numbers): the location is found by context.
-            old_start = max(0, int(m.group(1)) - 1) if m else None
+            # "-5,0" (a pure insertion, `diff -U0`) means after line 5, not at it.
+            old_start = (int(m.group(1)) if m.group(2) == "0" else max(0, int(m.group(1)) - 1)) if m else None
             i += 1
             old_chunk, new_chunk = [], []
             while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
                 item = diff_lines[i]
-                if item.startswith(("--- ", "+++ ")):
+                # The next file's "--- a/x" + "+++ b/x" header. A removed "-- sql comment" line is "--- sql
+                # comment" in the diff: alone it is a hunk line, and ending the hunk there dropped the rest.
+                if item.startswith("--- ") and i + 1 < len(diff_lines) and diff_lines[i + 1].startswith("+++ "):
                     break
                 if item.startswith("\\ No newline at end of file"):
                     i += 1
