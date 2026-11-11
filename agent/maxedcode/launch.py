@@ -839,9 +839,9 @@ def ollama_start(model, ctx, say, opts=None):
         return _fail("pick a model (none downloaded? in a terminal: ollama pull qwen3:8b)")
     env = {"OLLAMA_CONTEXT_LENGTH": str(ctx), **opt_env("ollama", opts)}
     keep = env.get("OLLAMA_KEEP_ALIVE") or "30m"
-    say(" ".join(f"{k}={v}" for k, v in env.items()) + " (saved for you: Ollama started any other way uses them too)")
-    with suppress(Exception):
-        servers.set_user_env(env)
+    # only for the `ollama serve` started here: the user's own environment is never written, so Ollama started
+    # by hand (the tray, a terminal) runs with the user's own settings, as before
+    say(" ".join(f"{k}={v}" for k, v in env.items()))
     applied = (load_state().get("applied") or {}).get("ollama")
 
     def serve():

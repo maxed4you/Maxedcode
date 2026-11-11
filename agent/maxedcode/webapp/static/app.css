@@ -853,3 +853,8 @@ body, .composer, .dialog, .menu { transition: background-color 0.2s ease, color 
 .way-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
 .way-field .field { width: 100%; }
 .way-field .pick-row .field { flex: 1; width: auto; }
+.run-fold { display: flex; align-items: center; gap: 6px; margin: 24px 0 8px; color: var(--muted); }
+.run-fold .set-group { margin: 0; }
+.run-fold:hover, .run-fold:hover .set-group { color: var(--text); }
+.run-fold svg { transition: transform 0.15s ease; }
+.run-fold.open svg { transform: rotate(90deg); }

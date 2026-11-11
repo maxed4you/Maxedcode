@@ -443,25 +443,25 @@
   }
   // The chat follows the answer until the reader scrolls up, whatever the distance (a nearness test let a small
   // scroll up be pulled back, and a big piece of new text stopped the following); back at the end it follows again.
-  var follow = true, lastTop = 0
+  var stick = true, lastTop = 0
   function fromEnd(s) { return s.scrollHeight - s.scrollTop - s.clientHeight }
   function scrollDown(force) {
     var s = $('scroll')
-    if (force) follow = true
-    if (follow) { s.scrollTop = s.scrollHeight; lastTop = s.scrollTop }
+    if (force) stick = true
+    if (stick) { s.scrollTop = s.scrollHeight; lastTop = s.scrollTop }
     updateToBottom()
   }
   function onChatScroll() {
     var s = $('scroll'), gap = fromEnd(s)
-    if (gap < 30) follow = true
-    else if (s.scrollTop < lastTop - 2) follow = false   // moved up and not at the end (not text shrinking at the end)
+    if (gap < 30) stick = true
+    else if (s.scrollTop < lastTop - 2) stick = false   // moved up and not at the end (not text shrinking at the end)
     lastTop = s.scrollTop
     updateToBottom()
   }
   // The reader scrolled up: the chat stops following the answer and a button brings them back to the end.
   function updateToBottom() {
     var s = $('scroll')
-    $('to-bottom').hidden = state.view !== 'chat' || follow || fromEnd(s) < 30
+    $('to-bottom').hidden = state.view !== 'chat' || stick || fromEnd(s) < 30
   }
   // A box with its own scroll (reasoning) keeps showing its newest lines unless the reader scrolled it up
   function keepEnd(box, change) {
@@ -2379,27 +2379,17 @@
   }
   // The model menu: the effort, then the local models of the program in use (a click loads one with its last
   // context), its stop, and Settings -> Models. Loaded once on the first open, then from the cache.
+  // The model menu: the effort, the model in use, and Settings -> Models. Nothing here starts or stops a server
+  // (a stray click must not load a big model): that is only in Settings -> Models and /local.
   function modelMenu() {
-    var model = state.settings && state.settings.effective && state.settings.effective.model
+    var eff = (state.settings && state.settings.effective) || {}, server = (state.settings && state.settings.server) || {}
     var items = [{ node: effortPanel() }, '-']
-    var s = launchData && launchDefault(), job = launchData && launchData.job, busy = !!(job && job.result === null)
-    if (s && s.installed) {
-      items.push({ head: t('runMenuHead') + ' · ' + s.label + (s.running ? '' : ' · ' + t('runOff').toLowerCase()) })
-      ;(s.models || []).slice(0, 8).forEach(function (m) {
-        var on = s.running && m.loaded
-        items.push({ label: m.name, value: on && s.loaded.ctx ? ctxLabel(s.loaded.ctx) : ctxLabel(m.pick_ctx), check: on, title: m.id,
-          run: function () { if (!on && !busy && s.can_start) launchAct({ do: 'start', kind: s.kind, model: m.id, ctx: m.pick_ctx }) } })
-      })
-      if (busy) items.push({ label: (job.do === 'stop' ? t('runStopping') : t('setupStarting')) + ' ' + job.secs + ' ' + t('runSecs'), run: function () { openSection('agent') } })
-      if (s.running && !busy) items.push({ label: t('runStop') + ' ' + s.label, icon: 'square', danger: true, run: function () { launchAct({ do: 'stop', kind: s.kind }) } })
-      items.push('-')
-    } else if (!model) {
-      items.push({ label: t('model'), value: t('offline'), run: function () { openSection('agent') } })
-    }
-    if (model && !(s && s.installed && s.running && isCurrent(s))) items.push({ label: t('model'), value: model, check: true, run: function () { openSection('agent') } })
+    var where = [KIND_LABELS[server.kind] || '', server.online && server.ctx ? ctxLabel(server.ctx) : ''].filter(Boolean).join(' · ')
+    items.push({ label: eff.model && eff.model !== 'local' ? shortModel(eff.model) : t('model'), sub: where || '',
+      value: server.online ? '' : t('offline'), check: !!server.online, title: (eff.model || '') + '\n' + (eff.base_url || ''),
+      run: function () { openSection('agent') } })
     items.push({ label: t('runMenuSettings'), icon: 'sliders', run: function () { openSection('agent') } })
     showMenu($('model-btn'), items, { align: 'right' })
-    if (!launchData) loadLaunch().then(function () { if (!$('menu').hidden && menuState.owner === $('model-btn')) modelMenu() })
   }
   var EFFORT_NAMES = { off: ['Выкл', 'Off'], low: ['Низкое', 'Low'], medium: ['Среднее', 'Medium'], high: ['Высокое', 'High'], ultra: ['Ultra', 'Ultra'] }
   // Effort as a "Faster - Smarter" slider (the chat's own; "default" follows Settings -> maxedcode).
@@ -3587,9 +3577,9 @@
 
   // ── Models → Run a model on this PC (maxedcode/launch.py): a server, a model, a context, one Start button ──
   Object.assign(TEXT, {
-    runHead: ['Запуск модели на этом компьютере', 'Run a model on this computer'],
-    runIntro: ['Выберите программу, модель и контекст — и нажмите «Запустить». maxedcode сам запустит сервер, загрузит модель и переключится на неё.',
-      'Pick a program, a model and a context, then Start: maxedcode starts the server, loads the model and switches to it.'],
+    runHead: ['Запуск модели отсюда — по желанию', 'Start a model from here (optional)'],
+    runIntro: ['Необязательно: запускайте модели как привыкли — агент сам подключится к тому, что работает. Здесь можно запустить в один клик: программа, модель (или ваш скрипт) — «Запустить».',
+      'Optional: start your models the way you always do, and the agent connects to what runs. Here it is one click: a program, a model (or your script), Start.'],
     runRunning: ['Работает', 'Running'], runOff: ['Не запущен', 'Not running'], runNotInstalled: ['Не установлен', 'Not installed'],
     runStart: ['Запустить', 'Start'], runRestart: ['Перезапустить с этой моделью', 'Restart with this model'],
     runStop: ['Остановить', 'Stop'], runStopping: ['Останавливаю…', 'Stopping…'], runCancel: ['Отменить', 'Cancel'],
@@ -3727,11 +3717,20 @@
       if (j.pct !== null && j.pct !== undefined) fill.style.width = Math.max(3, Math.min(100, j.pct)) + '%'
     }
   }
+  // Run a model on this PC: folded into one line when the agent already works with a running server (people
+  // who start their models themselves are not bothered, and nothing is looked up then); open when nothing
+  // answers. The choice to fold or open is kept.
   function launchSection(tab) {
-    launchBox = el('div', 'run-card')
-    tab.appendChild(el('div', 'set-group', t('runHead')))
+    var online = !!(state.settings && state.settings.server && state.settings.server.online)
+    var open = pref('runOpen', null)
+    if (open === null) open = !online
+    var head = tab.appendChild(el('button', 'run-fold' + (open ? ' open' : '')))
+    head.innerHTML = icon('chevronRight', 's14')
+    head.appendChild(el('span', 'set-group', t('runHead')))
+    head.onclick = function () { setPref('runOpen', !open); renderAgent() }
+    if (!open) { tab.appendChild(el('p', 'set-hint', t('runFolded'))); launchBox = null; return }
     tab.appendChild(el('p', 'set-hint', t('runIntro')))
-    tab.appendChild(launchBox)
+    launchBox = tab.appendChild(el('div', 'run-card'))
     drawLaunch()
     if (!launchData) loadLaunch().then(redrawLaunch)
   }
@@ -3965,7 +3964,7 @@
     connTab: ['Подключение', 'Connection'],
     followed: ['{old} не отвечает, а {new} запущен — агент переключился на {new}', '{old} does not answer and {new} runs: the agent switched to {new}'],
     nowHead: ['Агент сейчас работает с', 'The agent works with'],
-    nowOff: ['Сервер не отвечает — запустите модель ниже или подключите другой сервер', 'The server does not answer: start a model below or connect another server'],
+    nowOff: ['Сервер не отвечает — запустите его, и агент подключится сам', 'The server does not answer: start it and the agent connects by itself'],
     nowChange: ['Сменить подключение', 'Change connection'],
     connIntro: ['Куда агент отправляет запросы: сервер на этом компьютере, другой компьютер в сети или облачный API.',
       'Where the agent sends its requests: a server on this computer, another computer on the network, or a cloud API.'],
@@ -3979,6 +3978,8 @@
     cloudHead: ['Облачный API', 'Cloud API'], cloudSub: ['OpenAI, Claude, Gemini, OpenRouter и другие — нужен ключ провайдера.', 'OpenAI, Claude, Gemini, OpenRouter and others: the provider\'s key is needed.'],
     answersIntro: ['Как модель отвечает. Пустое поле — значение по умолчанию для этой модели.', 'How the model answers. An empty field keeps this model\'s default.'],
     runHow: ['Как запускать', 'How to start'],
+    runFolded: ['Свёрнуто: модели вы запускаете сами — агент подключается к тому, что уже работает. Нажмите, чтобы запускать отсюда.',
+      'Folded: you start your models yourself, and the agent connects to what runs. Open it to start them from here.'],
     otherKind: ['Другое', 'Other'],
     about_strata: ['Быстрый движок для больших MoE-моделей на одной видеокарте', 'A fast engine for big MoE models on one GPU'],
     about_lmstudio: ['Программа с каталогом моделей — самый простой старт', 'An app with a model catalog: the easiest start'],
@@ -4905,7 +4906,7 @@
     var s = $('scroll')
     if (e.deltaY >= 0 || e.ctrlKey || s.scrollTop <= 0) return
     for (var n = e.target; n && n !== s; n = n.parentElement) if (n.scrollTop > 0 && n.scrollHeight > n.clientHeight + 1) return
-    follow = false
+    stick = false
     updateToBottom()
   }, { passive: true })
   $('to-bottom').onclick = function () { scrollDown(true) }
