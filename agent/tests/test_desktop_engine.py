@@ -341,8 +341,9 @@ class SideAnswerTests(unittest.TestCase):
         old = headless.FORMAT
         headless.FORMAT = "stream-json"
         try:
+            # a Strata server (the cache pin is checked): not whatever server this PC's config.json names
             with patch.object(headless, "save_session") as save, patch.object(headless, "current_tool_specs", return_value=[]), \
-                    redirect_stdout(buf):
+                    patch.object(headless.config, "SERVER_KIND", "strata"), redirect_stdout(buf):
                 asyncio.run(headless.side_answer(client, history, "s1", "which file?"))
         finally:
             headless.FORMAT = old

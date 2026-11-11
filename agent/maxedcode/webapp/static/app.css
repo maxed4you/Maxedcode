@@ -866,3 +866,10 @@ body, .composer, .dialog, .menu { transition: background-color 0.2s ease, color 
 /* a setting whose explanation is a tooltip (tipRow): a quiet dotted underline says there is one */
 .lbl .has-hint { cursor: help; text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent); text-underline-offset: 4px; }
 .conn-now { padding: 12px 16px; }
+.set-group-acts { display: inline-flex; gap: 4px; margin-top: 16px; }
+.set-group-row .set-group-acts .btn { margin-top: 0; }
+.found-note { font-size: 12px; color: var(--muted); padding: 6px 12px 8px; }
+.found-row .btn { flex: none; }
+.tag.quiet { color: var(--faint); }
+.run-note { margin-left: auto; font-size: 12px; color: var(--muted); text-align: right; }
+.run-note + .btn.run-go { margin-left: 0; }

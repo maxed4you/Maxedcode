@@ -188,6 +188,10 @@ class LocalQualityTests(unittest.TestCase):
         self.assertEqual(asyncio.run(hooks.run_pending_auto_tests("coalesced-test-session", str(self.root))), "")
 
     def test_model_profile_matches_prefix_and_overrides_sampling(self):
+        # the user's own /sampling (state.json) would win over the profile: not part of this test
+        runtime = patch.dict(config.RUNTIME, {}, clear=True)
+        runtime.start()
+        self.addCleanup(runtime.stop)
         old = config.SETTINGS.get("model_settings")
         config.SETTINGS["model_settings"] = {"test-local": {"temperature": 0.17, "top_k": 7, "max_turns": 9, "edit_format": "udiff"}}
         self.addCleanup(lambda: config.SETTINGS.pop("model_settings", None) if old is None
@@ -207,7 +211,8 @@ class ServerResolveTests(unittest.TestCase):
 
     def test_profile_min_p_and_server_model_id(self):
         profiles = {"model_settings": {"qwen": {"min_p": 0.0, "temperature": 1.0}}}
-        with patch.dict(config.SETTINGS, profiles), patch.object(config, "MODEL", "qwen3.8-flash-next"):
+        # the user's own /sampling (state.json) would win over the profile: not part of this test
+        with patch.dict(config.SETTINGS, profiles), patch.object(config, "MODEL", "qwen3.8-flash-next"),                 patch.dict(config.RUNTIME, {}, clear=True):
             self.assertEqual(config.min_p_for(), 0.0)
             self.assertEqual(config.sampling_for()["temperature"], 1.0)
         with patch.dict(config.SETTINGS, profiles), patch.object(config, "MODEL", "local"):

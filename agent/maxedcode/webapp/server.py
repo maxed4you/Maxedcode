@@ -972,6 +972,8 @@ class Handler(BaseHTTPRequestHandler):
             from .. import update
             return self.send(200, {**update.status(), "notice": update.take_notice()})
         if url.path == "/api/servers":       # model servers running / installed on this PC (first-start picker)
+            if query.get("lan"):             # ... or on the other PCs of the own network (5-15 s)
+                return self.send(200, module("maxedcode.servers", "lan", timeout=90))
             return self.send(200, module("maxedcode.servers", "scan"))
         if url.path == "/api/launch":        # Settings -> Models: servers, their models; ?job=1 only the job
             if query.get("job"):

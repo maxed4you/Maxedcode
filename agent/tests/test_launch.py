@@ -106,13 +106,65 @@ class Port(unittest.TestCase):
         stop.assert_not_called()
         self.assertIn("close it first", said[0])
 
-    def test_another_model_server_is_stopped_first(self):
+    def test_another_model_server_started_from_here_makes_room(self):
         downs = iter([False, True])
+        record = {"kind": "strata", "server": "strata", "base": "http://127.0.0.1:8080/v1"}
         with patch.object(servers, "port_down", lambda *a, **k: next(downs, True)), \
                 patch.object(servers, "kind_of", lambda *a, **k: "strata"), \
-                patch.object(launch, "stop") as stop:
+                patch.object(launch, "mine", lambda **k: record), patch.object(launch, "release") as release:
             self.assertTrue(launch.free_port("llamacpp", lambda t, p=None: None))
-        stop.assert_called_once_with("strata")
+        release.assert_called_once()
+        self.assertEqual(release.call_args[0][0], record)
+
+    def test_a_model_server_started_by_hand_is_left_alone(self):
+        said = []
+        with patch.object(servers, "port_down", lambda *a, **k: False), \
+                patch.object(servers, "kind_of", lambda *a, **k: "strata"), \
+                patch.object(launch, "mine", lambda **k: None), \
+                patch.object(launch, "release") as release, patch.object(launch, "stop") as stop:
+            self.assertFalse(launch.free_port("llamacpp", lambda t, p=None: said.append(t)))
+        release.assert_not_called()
+        stop.assert_not_called()
+        self.assertIn("outside maxedcode", said[0])
+
+
+class Ours(unittest.TestCase):
+    """What a start from here brought up is closed by the next start from here; the user's own servers never."""
+    def setUp(self):
+        launch.save_state({})
+
+    def test_the_record_holds_only_while_the_same_process_listens(self):
+        with patch.object(launch, "listener", lambda port: 111):
+            launch.keep_ours({"kind": "strata", "server": "strata", "base": "http://127.0.0.1:8080/v1"})
+        with patch.object(servers, "port_down", lambda *a, **k: False):
+            with patch.object(launch, "listener", lambda port: 111):
+                self.assertEqual(launch.mine("strata")["kind"], "strata")
+                self.assertIsNone(launch.mine("lmstudio"))
+            with patch.object(launch, "listener", lambda port: 222):     # started again by hand
+                self.assertIsNone(launch.mine("strata"))
+        with patch.object(servers, "port_down", lambda *a, **k: True):    # not running any more
+            self.assertIsNone(launch.mine("strata"))
+
+    def test_a_start_closes_the_previous_start_from_here_of_another_program(self):
+        prev = {"kind": "lmstudio", "server": "lmstudio", "base": "http://127.0.0.1:1234/v1", "model": "gemma"}
+        with patch.object(launch, "mine", lambda *a, **k: prev), patch.object(launch, "release") as release, \
+                patch.dict(launch.START, {"strata": lambda *a, **k: launch._done("strata", "http://127.0.0.1:8080/v1", None)}), \
+                patch.object(launch, "keep_ours") as keep, patch.object(launch, "use", lambda r: True), \
+                patch.object(servers, "describe", lambda *a, **k: {"kind": "strata"}), \
+                patch.dict(os.environ, {"MAXEDCODE_OFFLINE": ""}):
+            r = launch.start("strata", "iq3_xxs", 65536)
+        self.assertTrue(r["ok"])
+        self.assertEqual(release.call_args[0][0], prev)
+        self.assertEqual(keep.call_args[0][0]["base"], "http://127.0.0.1:8080/v1")
+        self.assertTrue(keep.call_args[0][0]["serve"])
+
+    def test_release_unloads_only_what_was_loaded_from_here(self):
+        cmds = []
+        with patch.object(launch, "lms_cli", lambda: "lms"), patch.object(launch, "run", lambda c, *a, **k: cmds.append(c) or (0, "")), \
+                patch.object(servers, "loaded_models", lambda *a, **k: [("users-own", 8192)]):
+            launch.release({"kind": "lmstudio", "server": "lmstudio", "base": "http://127.0.0.1:1234/v1",
+                            "model": "gemma", "serve": True}, lambda *a: None)
+        self.assertEqual(cmds, [["lms", "unload", "gemma"]])      # the server holds the user's model: it stays up
 
 
 class LmStudio(unittest.TestCase):
@@ -143,11 +195,12 @@ class LmStudio(unittest.TestCase):
         for p in self.stack:
             p.stop()
 
-    def test_load_with_one_slot_after_unloading_another_model(self):
+    def test_a_model_loaded_by_hand_stays_and_one_slot_is_the_default(self):
         self.loaded = [("other", 4096)]
-        r = launch.lms_start("gemma", 32768, lambda t, p=None: None)
+        with patch.object(launch, "mine", lambda *a, **k: None):
+            r = launch.lms_start("gemma", 32768, lambda t, p=None: None)
         self.assertTrue(r["ok"])
-        self.assertIn(["lms", "unload", "--all"], self.cmds)
+        self.assertFalse(any(c[1] == "unload" for c in self.cmds))
         load = next(c for c in self.cmds if c[1] == "load" and "-y" in c)
         self.assertEqual(load[:3], ["lms", "load", "gemma"])
         self.assertEqual(load[load.index("--parallel") + 1], "1")       # the default of the setting
@@ -166,6 +219,30 @@ class LmStudio(unittest.TestCase):
         r = launch.lms_start("gemma", 32768, lambda t, p=None: None)
         self.assertTrue(r["ok"])
         self.assertFalse(any(c[1] in ("load", "unload") for c in self.cmds if len(c) > 1 and c[2:3] != ["--help"]))
+
+
+class LmStudioOurs(unittest.TestCase):
+    def test_the_model_loaded_from_here_before_is_unloaded_by_its_id(self):
+        cmds, loaded = [], [("old-from-here", 32768), ("users-own", 8192)]
+
+        class Proc:
+            def poll(self_):
+                return 0
+
+        def spawn(cmd, log=None, **kw):
+            cmds.append(cmd)
+            loaded.append((cmd[2], 32768))
+            return Proc()
+        prev = {"kind": "lmstudio", "server": "lmstudio", "base": "http://127.0.0.1:1234/v1", "model": "old-from-here"}
+        with patch.object(launch, "run", lambda c, *a, **k: cmds.append(c) or (0, "--parallel")), \
+                patch.object(launch, "spawn", spawn), patch.object(launch, "lms_cli", lambda: "lms"), \
+                patch.object(servers, "port_down", lambda *a, **k: False), \
+                patch.object(servers, "loaded_models", lambda *a, **k: list(loaded)), \
+                patch.object(launch, "mine", lambda *a, **k: prev):
+            r = launch.lms_start("gemma", 32768, lambda t, p=None: None)
+        self.assertTrue(r["ok"])
+        self.assertIn(["lms", "unload", "old-from-here"], cmds)
+        self.assertFalse(any(c[1:3] == ["unload", "--all"] or c[1:3] == ["unload", "users-own"] for c in cmds))
 
 
 class LmStudioOff(unittest.TestCase):

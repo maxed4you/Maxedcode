@@ -734,10 +734,69 @@ def _installed_posix():
     return out
 
 
+def local_nets():
+    """This PC's own private IPv4 /24 networks (192.168.0.0/24 …), where other PCs of the home or office are."""
+    ips = set()
+    with suppress(OSError):
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    with suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("10.255.255.255", 1))        # no packet is sent: it only picks the outgoing address
+        ips.add(s.getsockname()[0])
+    nets = set()
+    for ip in ips:
+        with suppress(ValueError):
+            a = ipaddress.ip_address(ip)
+            if a.is_private and not a.is_loopback and not a.is_link_local:
+                nets.add(ipaddress.ip_network(f"{ip}/24", strict=False))
+    return sorted(nets, key=str)
+
+
+def lan(key="", timeout=0.5):
+    """Model servers on other PCs of the own network: every host of the own /24 networks on the usual ports
+    (5-15 s), then each open port asked what it serves. -> [{"base", "kind", "label", "models", "loaded", "ctx",
+    "host"}]. This PC's own addresses are left out (running() lists them)."""
+    if offline():
+        return []
+    nets = local_nets()
+    mine = set()
+    with suppress(OSError):
+        mine.update(socket.gethostbyname_ex(socket.gethostname())[2])
+
+    def open_port(target):
+        with suppress(OSError), socket.create_connection(target, timeout):
+            return True
+        return False
+    targets = [(str(ip), p) for n in nets for ip in n.hosts() if str(ip) not in mine for p in PORTS]
+    if not targets:
+        return []
+    with cf.ThreadPoolExecutor(256) as pool:
+        opened = [t for t, ok in zip(targets, pool.map(open_port, targets)) if ok]
+
+    def probe(target):
+        host, port = target
+        base = f"http://{host}:{port}/v1"
+        try:
+            ids = model_ids(base, key, 3)
+        except urllib.error.HTTPError:
+            return {"base": base, "kind": "", "models": None, "need_key": True, "host": host}
+        if ids is None:
+            return None
+        d = describe(base, key, timeout=3)
+        return {"base": base, "kind": d["kind"], "models": ids, "loaded": d["model"], "ctx": d["ctx"], "host": host}
+    with cf.ThreadPoolExecutor(32) as pool:
+        found = [x for x in pool.map(probe, opened) if x]
+    for x in found:
+        x["label"] = LABELS.get(x["kind"], LABELS[""])
+        x["running"] = True
+    return found
+
+
 def main(argv):
-    """python -m maxedcode.servers [scan|start <kind>] -> one JSON line (the window uses it)."""
+    """python -m maxedcode.servers [scan|lan|start <kind>] -> one JSON line (the window uses it)."""
     if len(argv) > 2 and argv[1] == "start":
         print(json.dumps({"base": start(argv[2])}))
+    elif len(argv) > 1 and argv[1] == "lan":
+        print(json.dumps({"servers": lan(), "nets": [str(n) for n in local_nets()]}, ensure_ascii=False))
     else:
         print(json.dumps({"servers": scan()}, ensure_ascii=False))
     return 0

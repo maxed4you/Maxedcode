@@ -2858,19 +2858,33 @@ class AgentApp(App):
         pick, kind, model = arg, "", None
         if not pick:
             await self.note("looking for model servers on this computer…", "grey50")
-            found = await asyncio.to_thread(servers.scan)
-            # cloud APIs after the servers of this PC: picking one asks for its key
-            found += [{"label": f"Cloud: {name}", "base": url, "kind": kind, "running": True, "cloud": True}
-                      for name, (kind, url) in servers.CLOUD.items()]
-            labels = []
-            for x in found:
-                models = x.get("models") or []
-                what = "API key needed" if x.get("cloud") else \
-                    (x.get("loaded") or (models[0] if len(models) == 1 else f"{len(models)} models")) if x.get("running") \
-                    else "installed, not running" + (" - starts it" if x.get("start") else "")
-                labels.append(f"{x['label']} · {x['base']} · {what}" + (" · current" if x["base"] == config.BASE_URL else ""))
-            choice = await self.push_screen(Pick(f"Model server (now {config.BASE_URL}) - pick one or type an address",
-                                                 labels, True), wait_for_dismiss=True)
+            local = await asyncio.to_thread(servers.scan)
+            lan = "search the other computers of the network (5-15 s)"
+            while True:
+                # cloud APIs after the servers found: picking one asks for its key
+                found = local + [{"label": f"Cloud: {name}", "base": url, "kind": kind, "running": True, "cloud": True}
+                                 for name, (kind, url) in servers.CLOUD.items()]
+                labels = []
+                for x in found:
+                    models = x.get("models") or []
+                    what = "API key needed" if x.get("cloud") else \
+                        (x.get("loaded") or (models[0] if len(models) == 1 else f"{len(models)} models")) if x.get("running") \
+                        else "not running"
+                    labels.append(f"{x['label']} · {x['base']} · {what}" + (" · current" if x["base"] == config.BASE_URL else ""))
+                # the network search right after the servers of this PC, before the clouds
+                options = labels[:len(local)] + ([lan] if lan else []) + labels[len(local):]
+                choice = await self.push_screen(Pick(f"Model server (now {config.BASE_URL}) - pick one or type an address",
+                                                     options, True, body="A server that is not running is kept: the "
+                                                     "agent uses it once you start it (or start it with /local)."),
+                                                wait_for_dismiss=True)
+                if choice != lan:
+                    break
+                lan = None
+                await self.note("searching the network…", "grey50")
+                more = await asyncio.to_thread(servers.lan, config.API_KEY)
+                await self.note(f"found {len(more)} on the network" if more else "no other model server on the network",
+                                "grey50")
+                local = local + more
             if not choice:
                 return
             hit = next((x for x, label in zip(found, labels) if label == choice), None)
@@ -2901,12 +2915,12 @@ class AgentApp(App):
                     if not model:
                         return
                 elif not hit.get("running"):
-                    await self.note(f"starting {hit['label']}…", "grey50")
-                    if not await asyncio.to_thread(servers.start, hit["kind"]):
-                        await self.note(f"{hit['label']} did not answer: {hit.get('how') or 'start it'}, then /server again", "yellow")
-                        return
+                    # nothing is started from here (/local does that): the address is kept, the agent uses it
+                    # as soon as the server answers
+                    await self.note(f"{hit['label']} is not running: start it the way you do (or /local)", "grey50")
                 elif hit["kind"] in ("lmstudio", "ollama") and len(hit.get("models") or []) > 1:
-                    model = hit.get("loaded") or hit["models"][0]   # they load whatever a request names
+                    # they load whatever a request names: the loaded one; none loaded - none pinned (not a random one)
+                    model = hit.get("loaded")
             else:
                 pick = choice.strip()
         if not kind:        # a typed address in any form: "192.168.0.10", "pc:1234" -> the URL that answers

@@ -3869,12 +3869,14 @@
     var body = box.appendChild(el('div', 'run-body'))
     // the state of this program, its stop button
     var st = body.appendChild(el('div', 'run-state'))
-    st.appendChild(el('span', 'state-dot ' + (s.running ? 'ok' : s.installed ? 'off' : 'none')))
+    if (s.kind !== 'other' || s.running) st.appendChild(el('span', 'state-dot ' + (s.running ? 'ok' : s.installed ? 'off' : 'none')))
     var lo = s.loaded || {}
     var line = s.running ? t('runRunning') + (lo.label ? ' · ' + lo.label : '') + (lo.model ? ' · ' + shortModel(lo.model) + (lo.ctx ? ' · ' + ctxLabel(lo.ctx) : '') : s.kind === 'other' ? '' : ' · ' + t('runNoLoaded'))
       : s.kind === 'other' ? t('about_other') : s.installed ? t('runOff') : t('runNotInstalled')
-    st.appendChild(el('span', 'run-state-text', line))
+    st.appendChild(el('span', s.kind === 'other' && !s.running ? 'run-about' : 'run-state-text', line))
     if (s.running && isCurrent(s)) st.appendChild(el('span', 'tag', t('runCurrent')))
+    // started from this app (a start from here closes it) or by hand (left alone)
+    if (s.running) st.appendChild(el('span', 'tag quiet', s.by_app ? t('byApp') : t('byHand'))).title = s.by_app ? t('byAppSub') : t('byHandSub')
     st.appendChild(el('span', 'grow'))
     if (s.running && !isCurrent(s)) st.appendChild(smallBtn(t('runUseIt'), function () {
       api('/api/settings', { base_url: s.base, server: s.kind === 'other' ? null : s.kind, model: s.kind === 'lmstudio' || s.kind === 'ollama' ? lo.model || null : null })
@@ -3921,10 +3923,14 @@
         }
         r.onclick = function () { save('way', w.id); wayForm = null; drawLaunch() }
       })
-      if (!ways.length) wl.appendChild(el('div', 'run-none', t('wayOtherNone')))
+      if (!ways.length && !(wayForm && wayForm.kind === s.kind)) wl.appendChild(el('div', 'run-none', t('wayOtherNone')))
     }
-    if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
-    else body.appendChild(smallBtn('+ ' + t('wayAdd'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link')).classList.add('run-add')
+    var listed = ways.length > 1 || (ways.length && ways[0].type !== 'builtin') || s.kind === 'other'
+    var addWay = function () {
+      if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
+      else body.appendChild(smallBtn('+ ' + t('wayAdd'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link')).classList.add('run-add')
+    }
+    if (listed) addWay()
     var w0 = p.wayObj, builtin = w0 && w0.type === 'builtin'
     if (builtin) {
       // models: one radio row each, the facts that help choosing (size, quantization, the most context it takes)
@@ -3967,13 +3973,19 @@
       }
       optionsBox(body, s, p)
     }
+    if (!listed) addWay()
     // the one main action
     var foot = body.appendChild(el('div', 'run-foot'))
     jobBox = foot.appendChild(el('div', 'run-job'))
     drawJob()
     var same = builtin && s.running && p.model && p.model.loaded && (!lo.ctx || lo.ctx === p.ctx)
     var go = foot.appendChild(el('button', 'btn run-go', same ? '✓ ' + t('runActive') : s.running ? t('runRestart') : t('runStart')))
-    go.disabled = busy || same || !w0 || (builtin && !p.model)
+    // a Strata / llama-server started by hand holds the port: nothing from here closes it
+    var blocked = s.running && !s.by_app && (s.kind === 'strata' || s.kind === 'llamacpp')
+    var o = launchData.ours
+    var note = blocked ? t('byHandBlocked') : o && o.kind !== s.kind && !busy ? t('willClose').replace('{x}', o.label || o.kind) : ''
+    if (note) foot.insertBefore(el('span', 'run-note', note), go)
+    go.disabled = busy || same || !w0 || (builtin && !p.model) || blocked
     go.title = !w0 ? t('wayNone') : builtin ? '' : w0.type === 'preset' ? t('wayPresetHint') : t('runScriptHint')
     go.onclick = function () {
       launchAct({ do: 'start', kind: s.kind, way: p.way, model: builtin && p.model ? p.model.id : null, ctx: builtin ? p.ctx : null, opts: builtin ? p.opts : null })
@@ -3985,6 +3997,14 @@
   // a cloud API with its key, the recent ones. Answers: sampling and the default effort.
   Object.assign(TEXT, {
     connTab: ['Подключение', 'Connection'],
+    byApp: ['из приложения', 'from here'], byHand: ['запущен вручную', 'started by hand'],
+    byAppSub: ['Запущен отсюда: новый запуск отсюда сначала закроет его', 'Started from here: a new start from here closes it first'],
+    byHandSub: ['Запущен не из приложения: запуск отсюда его не закроет и не выгрузит ваши модели', 'Not started from here: a start from here never closes it or unloads your models'],
+    byHandBlocked: ['Работает ваш запуск — приложение его не закрывает', 'Your own start runs: this app does not close it'],
+    willClose: ['Закроет {x} — запущен отсюда', 'Closes {x}, started from here'],
+    lanFind: ['Искать в сети', 'Search the network'], lanBusy: ['Ищу в сети…', 'Searching…'],
+    lanSub: ['Серверы моделей на других компьютерах вашей сети (5–15 с)', 'Model servers on the other computers of your network (5-15 s)'],
+    lanNone: ['В сети других серверов не найдено', 'No other server on the network'], ownServer: ['Свой сервер', 'Own server'],
     followed: ['{old} не отвечает, а {new} запущен — агент переключился на {new}', '{old} does not answer and {new} runs: the agent switched to {new}'],
     nowHead: ['Агент сейчас работает с', 'The agent works with'],
     nowOff: ['не отвечает', 'does not answer'],
@@ -4082,10 +4102,9 @@
     if (withChange) card.appendChild(smallBtn(t('nowChange'), function () { openSection('conn') }, 'outline'))
   }
   function connectTo(x, b) {
-    var models = x.models || []
     var body = { base_url: x.base, server: x.kind || null, model: null }
     // LM Studio / Ollama list every downloaded model: pin the loaded one (another id makes them load it)
-    if ((x.kind === 'lmstudio' || x.kind === 'ollama') && (x.loaded || models.length > 1)) body.model = x.loaded || models[0]
+    if ((x.kind === 'lmstudio' || x.kind === 'ollama') && x.loaded) body.model = x.loaded
     if (b) b.disabled = true
     return api('/api/settings', body).then(function (d) {
       if (d.error) { if (b) b.disabled = false; toast(d.error, 4000); return }
@@ -4095,7 +4114,7 @@
     })
   }
 
-  var foundServers = null
+  var foundServers = null, lanServers = null, lanNets = []
   function renderConn() {
     var tab = $('tab-conn'), data = state.settings
     if (!tab) return
@@ -4107,20 +4126,30 @@
     // servers on this PC: found when the tab is drawn, connected with one click
     var g = tab.appendChild(el('div', 'set-group-row'))
     g.appendChild(el('div', 'set-group', t('foundHead')))
-    g.appendChild(smallBtn(t('foundAgain'), function () { foundServers = null; renderConn() }, 'link'))
+    var acts = g.appendChild(el('span', 'set-group-acts'))
+    acts.appendChild(smallBtn(t('foundAgain'), function () { foundServers = null; lanServers = null; renderConn() }, 'link'))
+    var lanBtn = acts.appendChild(smallBtn(lanServers === 'busy' ? t('lanBusy') : t('lanFind'), function () {
+      lanServers = 'busy'
+      renderConn()
+      api('/api/servers?lan=1').then(function (r) { lanServers = (r && r.servers) || []; lanNets = (r && r.nets) || []; renderConn() },
+        function () { lanServers = []; renderConn() })
+    }, 'link'))
+    lanBtn.disabled = lanServers === 'busy'
+    lanBtn.title = t('lanSub')
     var list = tab.appendChild(el('div', 'set-card found-list'))
     function draw() {
       list.innerHTML = ''
       if (!foundServers) { var w = list.appendChild(el('div', 'run-empty')); w.appendChild(el('span', 'spin')); w.appendChild(el('span', 'muted', t('foundScan'))); return }
       var any = false
-      foundServers.forEach(function (x) {
+      var lanList = Array.isArray(lanServers) ? lanServers : []
+      foundServers.concat(lanList).forEach(function (x) {
         if (!x.running) return
         any = true
         var cur = String(eff.base_url || '').replace(/\/+$/, '').toLowerCase() === String(x.base || '').replace(/\/+$/, '').toLowerCase()
         var r = list.appendChild(el('div', 'found-row'))
         r.appendChild(el('span', 'state-dot ok'))
         var info = r.appendChild(el('div', 'found-info'))
-        info.appendChild(el('div', 'found-name', x.label))
+        info.appendChild(el('div', 'found-name', (x.label === 'OpenAI-compatible server' ? t('ownServer') : x.label) + (x.host ? ' · ' + x.host : '')))
         var models = x.models || []
         info.appendChild(el('div', 'found-sub', [x.loaded || (models.length === 1 ? models[0] : models.length ? models.length + ' ' + t('setupModels') : ''),
           x.ctx ? ctxLabel(x.ctx) : '', String(x.base || '').replace(/^https?:[/][/]/, '')].filter(Boolean).join(' · ')))
@@ -4128,6 +4157,7 @@
         else { var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) })) }
       })
       if (!any) list.appendChild(el('div', 'run-none', t('foundNone')))
+      if (Array.isArray(lanServers) && !lanServers.length) list.appendChild(el('div', 'found-note', t('lanNone') + (lanNets.length ? ' (' + lanNets.join(', ') + ')' : '')))
     }
     draw()
     if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; draw() }, function () { foundServers = []; draw() })
@@ -4153,7 +4183,7 @@
     var recent = server.recent || []
     if (recent.length) {
       tab.appendChild(el('div', 'set-group', t('recentServers')))
-      var rbox = tab.appendChild(el('div', 'set-card'))
+      var rbox = tab.appendChild(el('div', 'set-card found-list'))
       recent.forEach(function (x) {
         var b = smallBtn(x.cloud ? t('apiKey') + '…' : t('connect'), function () {
           if (x.cloud) { kit.change('base_url', x.base_url); if (x.model) kit.change('model', x.model); renderConn(); return }
@@ -4163,7 +4193,11 @@
             gotSettings(d); renderModelTabs()
           })
         }, 'outline')
-        listRow(rbox, x.label || x.base_url, x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : ''), b)
+        var r = rbox.appendChild(el('div', 'found-row'))
+        var info = r.appendChild(el('div', 'found-info'))
+        info.appendChild(el('div', 'found-name', x.label && x.label !== 'OpenAI-compatible server' ? x.label : t('ownServer')))
+        info.appendChild(el('div', 'found-sub', x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '')))
+        r.appendChild(b)
       })
     }
     // a cloud API: provider, key, model

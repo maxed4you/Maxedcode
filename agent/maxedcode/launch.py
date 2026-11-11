@@ -264,6 +264,89 @@ def remove_way(way_id):
     save_state(st)
 
 
+# What this app started (the last start from here): {"kind" (the program tab), "server" (the kind that answered),
+# "base", "model" (LM Studio / Ollama: the model loaded from here), "serve" (the server process itself was
+# started from here), "pid" (the process listening on its port then)}. A new start from here closes it first;
+# anything the user started by hand is never closed or unloaded by a start (only by their own Stop).
+def ours(st=None):
+    o = (load_state() if st is None else st).get("ours")
+    return o if isinstance(o, dict) and o.get("base") else None
+
+
+def _port(base):
+    with suppress(ValueError):
+        return urllib.parse.urlsplit(str(base)).port
+    return None
+
+
+def mine(kind=None, base=None):
+    """The record of this app's start when it is the one running now (same program or address, and the same
+    process on its port: a server the user started again by hand is theirs), else None."""
+    o = ours()
+    if not o:
+        return None
+    if kind and kind not in (o.get("kind"), o.get("server")) and not base:
+        return None
+    if base and str(base).rstrip("/").lower() != str(o["base"]).rstrip("/").lower():
+        return None
+    if servers.port_down(o["base"]):
+        return None
+    pid = o.get("pid")
+    return o if not pid or listener(_port(o["base"])) == pid else None
+
+
+def keep_ours(record):
+    """Remembers the server a start from here brought up (see ours())."""
+    st = load_state()
+    st["ours"] = {**record, "pid": listener(_port(record["base"])) if _port(record["base"]) else None}
+    save_state(st)
+
+
+def forget_ours(kind=None, base=None):
+    st = load_state()
+    o = ours(st)
+    if o and (not kind or kind in (o.get("kind"), o.get("server"))) and \
+            (not base or str(base).rstrip("/").lower() == str(o["base"]).rstrip("/").lower()):
+        st.pop("ours", None)
+        save_state(st)
+
+
+def release(o, say):
+    """Closes what a start from here brought up, and only that: LM Studio / Ollama unload the model loaded from
+    here (the user's own models stay) and their server stops only when it was started from here and holds
+    nothing else; Strata, llama.cpp and script servers are this app's whole: stopped."""
+    kind = o.get("server") or o.get("kind")
+    base = o["base"]
+    label = servers.LABELS.get(kind, kind)
+    say(f"closing {label} started from here before")
+    if kind == "lmstudio":
+        lms = lms_cli()
+        if lms and o.get("model"):
+            run([lms, "unload", o["model"]], 120)
+        if lms and o.get("serve") and not servers.loaded_models(base, kind="lmstudio"):
+            run([lms, "server", "stop"], 60)
+        forget_ours()
+        return True
+    if kind == "ollama":
+        r = servers.root(base)
+        if o.get("model"):
+            with suppress(Exception):
+                servers.http(r + "/api/generate", body={"model": o["model"], "keep_alive": 0}, timeout=60)
+        if o.get("serve") and not servers.loaded_models(base, kind="ollama"):
+            ollama_kill()
+        forget_ours()
+        return True
+    ok = stop(o.get("kind") if o.get("kind") in STOP else kind, say, base=base)["ok"]
+    forget_ours()
+    return ok
+
+
+def outside(label, port):
+    """The words for a server the user started by hand on the port a start needs."""
+    return _fail(f"{label} already runs on port {port}, started outside maxedcode: it is left alone. Close it "
+                 "yourself, or just use it (Settings -> Connection)")
+
+
 def log_file(kind):
     d = home() / "launch"
     d.mkdir(parents=True, exist_ok=True)
@@ -388,8 +471,11 @@ def free_port(kind, say):
     if other not in KINDS:          # not a model server this file knows: never stopped from here
         say(f"port {port} is taken by another program (PID {listener(port) or '?'}): close it first")
         return False
-    say(f"stopping {servers.LABELS.get(other, other)} on port {port} first")
-    stop(other)
+    o = mine(base=base)
+    if not o:                       # started by hand: left alone
+        say(f"port {port} is taken by {servers.LABELS.get(other, other)}, started outside maxedcode: close it first")
+        return False
+    release(o, say)
     return wait_down(base, 30)
 
 
@@ -467,9 +553,12 @@ def script_start(kind, way, say):
     if kind in KINDS and urllib.parse.urlsplit(base).port == port_of(kind):
         if not free_port(kind, say):
             return _fail(f"port {port_of(kind)} is still taken")
-        if not servers.port_down(base):         # the same program runs another model: the script starts its own
-            say(f"stopping the {servers.LABELS[kind]} that runs now")
-            stop(kind)
+        if not servers.port_down(base):         # the same program runs: closed only when started from here
+            o = mine(base=base)
+            if not o:
+                return outside(servers.LABELS[kind], port_of(kind))
+            release(o, say)
+            wait_down(base, 30)
     elif not servers.port_down(base) and _ready(kind, base):
         say("it is already running")
         return _done(servers.kind_of(base, timeout=2) or kind, base, None)
@@ -592,9 +681,11 @@ def strata_start(model, ctx, say, opts=None, preset=None):
         return _fail("pick a model")
     if not free_port("strata", say):
         return _fail("port 8080 is still taken")
-    if not servers.port_down(base):     # another model or context, or a server whose engine has ended
-        say("stopping the Strata that runs now")
-        strata_stop(say)
+    if not servers.port_down(base):     # another model or context: closed only when started from here
+        o = mine(base=base)
+        if not o:
+            return outside("Strata", 8080)
+        release(o, say)
     if preset:
         args = ["--preset", preset]
     else:
@@ -716,20 +807,28 @@ def lms_start(model, ctx, say, opts=None, force=False):
     if not model:
         return _fail("pick a model")
     opts = opts or {}
+    prev = mine("lmstudio", base)
+    serve = bool(prev and prev.get("serve"))
     if servers.port_down(base):
         say("lms server start")
         run([lms, "server", "start"], 90)
+        serve = True
         if not wait_up(base, 60, say, what="the LM Studio server"):
             return _fail("the LM Studio server did not start: open LM Studio -> Developer -> Start Server")
     on = servers.loaded_models(base, kind="lmstudio") or []
     same_opts = ((load_state().get("applied") or {}).get("lmstudio") or {}) == opts
-    if len(on) == 1 and servers.same_model(on[0][0], model) and (on[0][1] or 0) == int(ctx) and same_opts and not force:
-        say(f"{model} is already loaded with {ctx} tokens")
+    hit = next((m for m in on if servers.same_model(m[0], model)), None)
+    if hit and not force and (not prev or not servers.same_model(prev.get("model"), hit[0]) or
+                              ((hit[1] or 0) == int(ctx) and same_opts)):
+        # loaded already: as asked, or by the user by hand (their load and its context are left as they are)
+        say(f"{model} is already loaded" + (f" with {hit[1]} tokens" if hit[1] else ""))
         remember("lmstudio", model=model, ctx=ctx, way="builtin", opts=opts)
-        return _done("lmstudio", base, on[0][0])
-    if on:
-        say("lms unload --all")
-        run([lms, "unload", "--all"], 120)
+        return {**_done("lmstudio", base, hit[0]), "serve": serve}
+    if prev and prev.get("model") and any(servers.same_model(prev["model"], m[0]) for m in on):
+        say(f"lms unload {prev['model']} (loaded from here before)")
+        run([lms, "unload", prev["model"]], 120)
+    if on and not prev:
+        say("LM Studio holds models loaded by hand: they stay")
     # one slot by default: the agent sends one request at a time, and LM Studio's default 4 slots took 4x the
     # cache memory (an 8B model at 32K spilled out of a 12 GB card and answered 20 tokens in 45 s)
     flags = opt_flags("lmstudio", opts)
@@ -752,7 +851,7 @@ def lms_start(model, ctx, say, opts=None, force=False):
     if not hit:
         return _fail("LM Studio did not load the model: " + " | ".join(tail(log, 3)))
     remember("lmstudio", model=model, ctx=ctx, way="builtin", opts=opts, applied={**(load_state().get("applied") or {}), "lmstudio": opts})
-    return _done("lmstudio", base, hit[0])
+    return {**_done("lmstudio", base, hit[0]), "serve": serve}
 
 
 def lms_stop(say):
@@ -843,20 +942,22 @@ def ollama_start(model, ctx, say, opts=None):
     # by hand (the tray, a terminal) runs with the user's own settings, as before
     say(" ".join(f"{k}={v}" for k, v in env.items()))
     applied = (load_state().get("applied") or {}).get("ollama")
+    prev = mine("ollama", base)
+    started = {"serve": bool(prev and prev.get("serve"))}
 
     def serve():
         if not exe:
             return False
+        started["serve"] = True
         say("ollama serve")
         spawn([exe, "serve"], log=log_file("ollama"), env={**os.environ, **env})
         remember("ollama", applied={**(load_state().get("applied") or {}), "ollama": env})
         return wait_up(base, 60, say, what="Ollama", check=lambda: isinstance(servers.get(r + "/api/version"), dict))
 
     def load():
-        for m, _ in servers.loaded_models(base, kind="ollama") or []:
-            if not servers.same_model(m, model):
-                with suppress(Exception):
-                    servers.http(r + "/api/generate", body={"model": m, "keep_alive": 0}, timeout=60)
+        if prev and prev.get("model") and not servers.same_model(prev["model"], model):
+            with suppress(Exception):           # the one loaded from here before; the user's own stay
+                servers.http(r + "/api/generate", body={"model": prev["model"], "keep_alive": 0}, timeout=60)
         say(f"loading {model}…")
         try:
             servers.http(r + "/api/generate", body={"model": model, "keep_alive": keep}, timeout=WAIT["ollama"])
@@ -876,7 +977,10 @@ def ollama_start(model, ctx, say, opts=None):
     # the window is read back; the other variables only take effect at a start of the server
     other = {k: v for k, v in env.items() if k != "OLLAMA_CONTEXT_LENGTH"}
     stale = applied is not None and {k: v for k, v in applied.items() if k != "OLLAMA_CONTEXT_LENGTH"} != other
-    if not err and ((window() or 0) != int(ctx) or stale):
+    if not err and ((window() or 0) != int(ctx) or stale) and not started["serve"]:
+        # an Ollama started by hand keeps its own settings
+        say(f"Ollama was started outside maxedcode: it keeps its own settings (context {window() or '?'})")
+    elif not err and ((window() or 0) != int(ctx) or stale):
         say("Ollama runs with other settings: restarting it with these")
         ollama_kill()
         wait_down(base, 20)
@@ -886,7 +990,7 @@ def ollama_start(model, ctx, say, opts=None):
     if err:
         return _fail(f"Ollama did not load {model}: {err}")
     remember("ollama", model=model, ctx=ctx, way="builtin", opts=opts or {})
-    return _done("ollama", base, model)
+    return {**_done("ollama", base, model), "serve": started["serve"]}
 
 
 def ollama_stop(say):
@@ -1007,6 +1111,12 @@ def llama_start(model, ctx, say, opts=None):
         return _fail("pick a .gguf model file")
     if not free_port("llamacpp", say):
         return _fail("port 8080 is still taken")
+    if not servers.port_down(base):
+        o = mine(base=base)
+        if not o:
+            return outside("llama-server", 8080)
+        release(o, say)
+        wait_down(base, 20)
     opts = opts or {}
     cmd = [exe, "-m", model, "-c", str(ctx), "--host", "127.0.0.1", "--port", "8080", "--jinja"]
     flags = opt_flags("llamacpp", opts)
@@ -1170,7 +1280,13 @@ def catalog():
                                          "base": o["base"], "model": o.get("model")} for o in others],
                        "models": [], "ways": w, "last_way": (st.get("way") or {}).get(OTHER) or "",
                        "options": [], "opts": {}, "download": ""})
-    return {"servers": result, "last": st.get("kind") or ""}
+    o = mine()
+    for e in result:
+        if e["running"]:
+            e["by_app"] = bool(o and (e["kind"] == o.get("kind") or str(e.get("base")).rstrip("/") == str(o["base"]).rstrip("/")))
+    return {"servers": result, "last": st.get("kind") or "",
+            "ours": {"kind": o.get("kind"), "label": servers.LABELS.get(o.get("server"), o.get("server") or ""),
+                     "base": o["base"], "model": o.get("model")} if o else None}
 
 
 def _safe(fn):
@@ -1210,7 +1326,11 @@ def start(kind, model=None, ctx=None, script=None, say=None, way=None, opts=None
         way_by_id(kind, way) if way and way != "builtin" else None
     if way and way != "builtin" and not w:
         return _fail("this way to start is gone: pick another one")
+    target = (w.get("base") if w else None) or (servers.default_base(kind) if kind in KINDS else "")
     try:
+        prev = mine()
+        if prev and str(prev["base"]).rstrip("/").lower() != str(target).rstrip("/").lower():
+            release(prev, say)          # another program started from here: it makes room for this one
         if w and w["type"] == "preset":
             result = strata_start(None, ctx, say, preset=w["name"])
         elif w:
@@ -1224,6 +1344,9 @@ def start(kind, model=None, ctx=None, script=None, say=None, way=None, opts=None
     except Exception as e:            # a broken install must end the job with words, not a traceback
         result = _fail(f"{type(e).__name__}: {e}")
     if result.get("ok"):
+        keep_ours({"kind": kind, "server": result["kind"], "base": result["base"],
+                   "model": result.get("model") if result["kind"] in servers.JIT_KINDS else None,
+                   "serve": result.pop("serve", kind not in servers.JIT_KINDS)})
         live = servers.describe(result["base"], kind=result["kind"] if result["kind"] != OTHER else "",
                                 model=result.get("model"))
         result["kind"] = live.get("kind") or result["kind"]
@@ -1255,6 +1378,8 @@ def stop(kind, say=None, base=None):
             return {"ok": False, "text": f"{kind} is not stopped from here"}
     except Exception as e:
         return {"ok": False, "text": f"{type(e).__name__}: {e}"}
+    if ok:
+        forget_ours(None if base else kind, base)
     return {"ok": bool(ok), "text": "stopped" if ok else "it still answers"}
 
 
