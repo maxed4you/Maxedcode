@@ -3746,6 +3746,15 @@
     drawLaunch()
     loadLaunch().then(redrawLaunch)       // fresh every time it opens: what runs now
   }
+  // Settings -> Start models: the same as the launch window, as a tab of its own (apart from Connection)
+  function renderLaunchTab() {
+    var tab = $('tab-launch')
+    if (!tab) return
+    sectionHead(tab, t('runWindow'), '')
+    launchBox = tab.appendChild(el('div', 'run-card'))
+    drawLaunch()
+    loadLaunch().then(redrawLaunch)
+  }
   function closeLauncher() {
     var box = $('launcher')
     if (box) box.hidden = true
@@ -4526,7 +4535,7 @@
     }
     scan()
   }
-  var SECTIONS = ['general', 'chat', 'conn', 'answers', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
+  var SECTIONS = ['general', 'chat', 'conn', 'launch', 'answers', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
   function openSettings() {
     $('modal').hidden = false
     renderGeneral()
@@ -4638,6 +4647,7 @@
     b.onclick = function () {
       Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (x) { x.classList.toggle('active', x === b) })
       SECTIONS.forEach(function (k) { var s = $('tab-' + k); if (s) s.hidden = b.dataset.tab !== k })
+      if (b.dataset.tab === 'launch') renderLaunchTab()     // looked up only when it is opened
     }
   })
 
