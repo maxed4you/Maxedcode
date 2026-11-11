@@ -858,3 +858,11 @@ body, .composer, .dialog, .menu { transition: background-color 0.2s ease, color 
 .run-fold:hover, .run-fold:hover .set-group { color: var(--text); }
 .run-fold svg { transition: transform 0.15s ease; }
 .run-fold.open svg { transform: rotate(90deg); }
+
+/* the launch window (openLauncher): the setup card, wider */
+.launch-card { width: min(760px, 94vw); }
+.launch-card .run-card { margin-top: 6px; }
+
+/* a setting whose explanation is a tooltip (tipRow): a quiet dotted underline says there is one */
+.lbl .has-hint { cursor: help; text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent); text-underline-offset: 4px; }
+.conn-now { padding: 12px 16px; }

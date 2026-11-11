@@ -66,6 +66,7 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     filePlus: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/>',
     square: '<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/>',
+    play: '<path d="M8 5.5v13l10.5-6.5z"/>',
   }
   var FOLDER_COLOR = '<svg class="i" viewBox="0 0 24 24" style="stroke:none"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v1H2z" fill="#f2b83c"/><path d="M2 9h20v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z" fill="#ffd25e"/><path d="M2 12h20v1H2z" fill="#3b82f6" opacity=".9"/></svg>'
   function icon(name, cls) {
@@ -1935,7 +1936,7 @@
   }
   // The terminal's commands that are a button or a setting here: done right away when they carry a value, else the
   // settings section that does the same opens. Nothing goes to the model (it would only read "/effort high" as text).
-  var CLI_SECTIONS = { model: 'agent', models: 'agent', server: 'agent', local: 'agent', settings: 'general', config: 'general', sampling: 'agent', cloud: 'cloud', mcp: 'mcp',
+  var CLI_SECTIONS = { model: 'conn', models: 'conn', server: 'conn', settings: 'general', config: 'general', sampling: 'answers', cloud: 'cloud', mcp: 'mcp',
     hooks: 'hooks', permissions: 'perms', allow: 'perms', deny: 'perms', memory: 'memory', tools: 'cli', commands: 'cli',
     agents: 'cli', skill: 'cli' }
   function openSection(name) {
@@ -1989,6 +1990,7 @@
     }
     if (cmd === 'rewind') { toast(t('helpRewind')); return true }
     if (cmd === 'editor' || cmd === 'quit') { toast(t('cmdNotNeeded')); return true }
+    if (cmd === 'local') { openLauncher(); return true }
     if (CLI_SECTIONS[cmd] && !(cmd === 'skill' && arg)) { openSection(CLI_SECTIONS[cmd]); return true }
     return false
   }
@@ -2387,8 +2389,9 @@
     var where = [KIND_LABELS[server.kind] || '', server.online && server.ctx ? ctxLabel(server.ctx) : ''].filter(Boolean).join(' · ')
     items.push({ label: eff.model && eff.model !== 'local' ? shortModel(eff.model) : t('model'), sub: where || '',
       value: server.online ? '' : t('offline'), check: !!server.online, title: (eff.model || '') + '\n' + (eff.base_url || ''),
-      run: function () { openSection('agent') } })
-    items.push({ label: t('runMenuSettings'), icon: 'sliders', run: function () { openSection('agent') } })
+      run: function () { openSection('conn') } })
+    items.push({ label: t('connTab') + '…', icon: 'link', run: function () { openSection('conn') } })
+    items.push({ label: t('runWindow') + '…', icon: 'play', run: function () { openLauncher() } })
     showMenu($('model-btn'), items, { align: 'right' })
   }
   var EFFORT_NAMES = { off: ['Выкл', 'Off'], low: ['Низкое', 'Low'], medium: ['Среднее', 'Medium'], high: ['Высокое', 'High'], ultra: ['Ultra', 'Ultra'] }
@@ -3414,6 +3417,11 @@
     setHome($('app').classList.contains('home'))
   }
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyLook)
+  function tipRow(label, hint, control) {
+    var r = row(label, '', control)
+    if (hint) { var l = r.querySelector('.lbl > div'); l.title = hint; l.classList.add('has-hint') }
+    return r
+  }
   function row(label, sub, control, wide) {
     var r = el('div', 'row' + (wide ? ' wide' : ''))
     var l = el('div', 'lbl')
@@ -3577,7 +3585,7 @@
 
   // ── Models → Run a model on this PC (maxedcode/launch.py): a server, a model, a context, one Start button ──
   Object.assign(TEXT, {
-    runHead: ['Запуск модели отсюда — по желанию', 'Start a model from here (optional)'],
+    runHead: ['Запуск моделей', 'Start models'], runWindow: ['Запуск моделей', 'Start models'],
     runIntro: ['Необязательно: запускайте модели как привыкли — агент сам подключится к тому, что работает. Здесь можно запустить в один клик: программа, модель (или ваш скрипт) — «Запустить».',
       'Optional: start your models the way you always do, and the agent connects to what runs. Here it is one click: a program, a model (or your script), Start.'],
     runRunning: ['Работает', 'Running'], runOff: ['Не запущен', 'Not running'], runNotInstalled: ['Не установлен', 'Not installed'],
@@ -3643,6 +3651,7 @@
       if (r.error) return
       gotSettings(r)
       if (!$('modal').hidden) renderModelTabs()
+      redrawLaunch()
       toast(t('followed').replace('{new}', x.label).replace('{old}', KIND_LABELS[d.server.kind] || base), 6000)
     })
   }
@@ -3673,7 +3682,7 @@
             else if (j.result.ok) toast(t('runStopped'), 2500)
           }
           foundServers = null
-          return Promise.all([loadLaunch(), api('/api/settings').then(gotSettings)]).then(function () { if (!$('modal').hidden) renderModelTabs() })
+          return Promise.all([loadLaunch(), api('/api/settings').then(gotSettings)]).then(function () { if (!$('modal').hidden) renderModelTabs(); if ($('launcher') && !$('launcher').hidden) redrawLaunch() })
         }
         drawJob()
       }, function () {})
@@ -3717,22 +3726,30 @@
       if (j.pct !== null && j.pct !== undefined) fill.style.width = Math.max(3, Math.min(100, j.pct)) + '%'
     }
   }
-  // Run a model on this PC: folded into one line when the agent already works with a running server (people
-  // who start their models themselves are not bothered, and nothing is looked up then); open when nothing
-  // answers. The choice to fold or open is kept.
-  function launchSection(tab) {
-    var online = !!(state.settings && state.settings.server && state.settings.server.online)
-    var open = pref('runOpen', null)
-    if (open === null) open = !online
-    var head = tab.appendChild(el('button', 'run-fold' + (open ? ' open' : '')))
-    head.innerHTML = icon('chevronRight', 's14')
-    head.appendChild(el('span', 'set-group', t('runHead')))
-    head.onclick = function () { setPref('runOpen', !open); renderAgent() }
-    if (!open) { tab.appendChild(el('p', 'set-hint', t('runFolded'))); launchBox = null; return }
-    tab.appendChild(el('p', 'set-hint', t('runIntro')))
-    launchBox = tab.appendChild(el('div', 'run-card'))
+  // ── the launch window: starting models from here is optional and lives apart from the settings, so working
+  // with models started by hand is never in its way. Opened by the model menu and /local only. ──
+  function openLauncher(kind) {
+    var box = $('launcher')
+    if (!box) {
+      box = document.body.appendChild(el('div', 'modal'))
+      box.id = 'launcher'
+      box.addEventListener('mousedown', function (e) { if (e.target === box) closeLauncher() })
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !box.hidden) closeLauncher() })
+    }
+    if (kind) launchKind = kind
+    box.hidden = false
+    box.innerHTML = ''
+    var card = box.appendChild(el('div', 'setup-card launch-card'))
+    card.appendChild(iconBtn('x', '', closeLauncher)).classList.add('close')
+    card.appendChild(el('h2', '', t('runWindow')))
+    launchBox = card.appendChild(el('div', 'run-card'))
     drawLaunch()
-    if (!launchData) loadLaunch().then(redrawLaunch)
+    loadLaunch().then(redrawLaunch)       // fresh every time it opens: what runs now
+  }
+  function closeLauncher() {
+    var box = $('launcher')
+    if (box) box.hidden = true
+    launchBox = null
   }
   // the way to start (launch.ways): the one chosen here, else the last one started, else what the person set up
   // themselves (an own way, then a script found in the program's folder, then its presets), else the builtin start
@@ -3752,7 +3769,6 @@
   function wayFormBox(body, s) {
     var f = wayForm, box = body.appendChild(el('div', 'way-form'))
     box.appendChild(el('div', 'way-form-title', f.id ? t('wayEdit') : t('wayNew')))
-    box.appendChild(el('p', 'set-hint', s.kind === 'other' ? t('wayOtherSub') : t('wayNewSub')))
     var name = inputEl(t('wayName'), f.name), cmd = inputEl(t('wayCmdPh'), f.command), base = inputEl(s.base ? s.base.replace(/^https?:[/][/]/, '') : '127.0.0.1:5001', f.base)
     name.oninput = function () { f.name = name.value }
     cmd.oninput = function () { f.command = cmd.value }
@@ -3776,7 +3792,8 @@
     var r3 = box.appendChild(el('div', 'way-field'))
     r3.appendChild(el('label', '', t('wayBase')))
     r3.appendChild(base)
-    r3.appendChild(el('div', 'set-hint', s.kind === 'other' ? t('wayBaseOther') : t('wayBaseSub')))
+    base.title = s.kind === 'other' ? t('wayBaseOther') : t('wayBaseSub')
+    cmd.title = s.kind === 'other' ? t('wayOtherSub') : t('wayNewSub')
     var acts = box.appendChild(el('div', 'run-actions'))
     var save = acts.appendChild(smallBtn(t('save'), function () {
       if (!String(f.command || '').trim()) return cmd.focus()
@@ -3817,7 +3834,7 @@
         var cur = p.opts[o.key] !== undefined && p.opts[o.key] !== null ? String(p.opts[o.key]) : String(o.default || '')
         ctl = pick(o.choices.map(function (c) { return [c[0], tl(c[1])] }), cur, function (v) { setOpt(o.key, v) })
       }
-      rows.appendChild(row(tl(o.label), o.hint ? tl(o.hint) : '', ctl))
+      rows.appendChild(tipRow(tl(o.label), o.hint ? tl(o.hint) : '', ctl))
     })
     rows.appendChild(el('div', 'run-actions')).appendChild(smallBtn(t('runReset'), function () { p.opts = {}; launchPick[s.kind] = Object.assign(launchPick[s.kind] || {}, { opts: {} }); drawLaunch() }, 'link'))
   }
@@ -3866,7 +3883,6 @@
       acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
       acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
       acts.appendChild(smallBtn(t('wayAddShort'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link'))
-      acts.appendChild(el('span', 'muted small', t('runNotInstalledSub')))
       if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
       return
     }
@@ -3881,7 +3897,7 @@
         var title = w.type === 'builtin' ? t('wayBuiltin') : w.name
         var sub = w.type === 'builtin' ? t('wayBuiltinSub') : w.type === 'preset' ? t('wayPresetSub') : w.command + (w.base && w.source === 'own' ? ' → ' + w.base.replace(/^https?:[/][/]/, '') : '')
         info.appendChild(el('span', 'run-model-name', title))
-        info.appendChild(el('span', 'run-model-sub', sub))
+        if (w.source === 'own') info.appendChild(el('span', 'run-model-sub', sub))      // a found one: its name says it
         r.title = sub
         var tag = { found: t('wayFound'), own: t('wayOwn'), program: t('wayPreset') }[w.source]
         if (tag) r.appendChild(el('span', 'tag', tag))
@@ -3901,7 +3917,6 @@
     if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
     else body.appendChild(smallBtn('+ ' + t('wayAdd'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link')).classList.add('run-add')
     var w0 = p.wayObj, builtin = w0 && w0.type === 'builtin'
-    if (w0 && !builtin) body.appendChild(el('p', 'set-hint run-ctx-hint', w0.type === 'preset' ? t('wayPresetHint') : t('runScriptHint')))
     if (builtin) {
       // models: one radio row each, the facts that help choosing (size, quantization, the most context it takes)
       body.appendChild(el('div', 'run-label', t('runModel')))
@@ -3940,7 +3955,6 @@
           b.title = c.toLocaleString() + ' ' + t('tokens')
           b.onclick = function () { save('ctx', c); drawLaunch() }
         })
-        body.appendChild(el('p', 'set-hint run-ctx-hint', t('runCtxSub')))
       }
       optionsBox(body, s, p)
     }
@@ -3951,7 +3965,7 @@
     var same = builtin && s.running && p.model && p.model.loaded && (!lo.ctx || lo.ctx === p.ctx)
     var go = foot.appendChild(el('button', 'btn run-go', same ? '✓ ' + t('runActive') : s.running ? t('runRestart') : t('runStart')))
     go.disabled = busy || same || !w0 || (builtin && !p.model)
-    if (!w0) go.title = t('wayNone')
+    go.title = !w0 ? t('wayNone') : builtin ? '' : w0.type === 'preset' ? t('wayPresetHint') : t('runScriptHint')
     go.onclick = function () {
       launchAct({ do: 'start', kind: s.kind, way: p.way, model: builtin && p.model ? p.model.id : null, ctx: builtin ? p.ctx : null, opts: builtin ? p.opts : null })
     }
@@ -3964,22 +3978,20 @@
     connTab: ['Подключение', 'Connection'],
     followed: ['{old} не отвечает, а {new} запущен — агент переключился на {new}', '{old} does not answer and {new} runs: the agent switched to {new}'],
     nowHead: ['Агент сейчас работает с', 'The agent works with'],
-    nowOff: ['Сервер не отвечает — запустите его, и агент подключится сам', 'The server does not answer: start it and the agent connects by itself'],
+    nowOff: ['не отвечает', 'does not answer'],
     nowChange: ['Сменить подключение', 'Change connection'],
     connIntro: ['Куда агент отправляет запросы: сервер на этом компьютере, другой компьютер в сети или облачный API.',
       'Where the agent sends its requests: a server on this computer, another computer on the network, or a cloud API.'],
-    foundHead: ['Найденные серверы', 'Servers found'], foundSub: ['Серверы моделей на этом компьютере. Нажмите «Подключить» — больше ничего не нужно.', 'Model servers on this computer. Press Connect: nothing else is needed.'],
+    foundHead: ['На этом компьютере', 'On this computer'], foundSub: ['Серверы моделей на этом компьютере. Нажмите «Подключить» — больше ничего не нужно.', 'Model servers on this computer. Press Connect: nothing else is needed.'],
     foundScan: ['Ищу серверы…', 'Looking for servers…'], foundAgain: ['Искать снова', 'Search again'],
-    foundNone: ['На этом компьютере не найдено запущенных серверов. Запустите модель на вкладке «Модели» или введите адрес ниже.', 'No server runs on this computer. Start a model on the Models tab or type an address below.'],
+    foundNone: ['Ничего не запущено. Запустите модель как обычно — агент подключится сам.', 'Nothing runs. Start a model as usual: the agent connects by itself.'], cloudProvider: ['Провайдер', 'Provider'],
     connect: ['Подключить', 'Connect'], connected: ['Подключено', 'Connected'], startIt: ['Запустить…', 'Start…'],
-    addrHead: ['Другой компьютер или свой адрес', 'Another computer or an own address'],
-    addrSub: ['IP или адрес в любом виде: 192.168.0.10, 192.168.0.10:1234, http://host/v1. Порт и /v1 подберутся сами.', 'An IP or an address in any form: 192.168.0.10, 192.168.0.10:1234, http://host/v1. The port and /v1 are found.'],
+    addrHead: ['Адрес', 'Address'],
+    addrSub: ['Сейчас используется этот. Другой компьютер или свой сервер — впишите IP или адрес в любом виде (192.168.0.10, 192.168.0.10:1234, http://host/v1), порт и /v1 подберутся сами.', 'This one is in use. Another computer or an own server: type an IP or an address in any form (192.168.0.10, 192.168.0.10:1234, http://host/v1); the port and /v1 are found.'],
     addrPh: ['например 192.168.0.10', 'e.g. 192.168.0.10'],
-    cloudHead: ['Облачный API', 'Cloud API'], cloudSub: ['OpenAI, Claude, Gemini, OpenRouter и другие — нужен ключ провайдера.', 'OpenAI, Claude, Gemini, OpenRouter and others: the provider\'s key is needed.'],
+    cloudHead: ['Облачная модель', 'Cloud model'], cloudSub: ['OpenAI, Claude, Gemini, OpenRouter и другие — нужен ключ провайдера.', 'OpenAI, Claude, Gemini, OpenRouter and others: the provider\'s key is needed.'],
     answersIntro: ['Как модель отвечает. Пустое поле — значение по умолчанию для этой модели.', 'How the model answers. An empty field keeps this model\'s default.'],
     runHow: ['Как запускать', 'How to start'],
-    runFolded: ['Свёрнуто: модели вы запускаете сами — агент подключается к тому, что уже работает. Нажмите, чтобы запускать отсюда.',
-      'Folded: you start your models yourself, and the agent connects to what runs. Open it to start them from here.'],
     otherKind: ['Другое', 'Other'],
     about_strata: ['Быстрый движок для больших MoE-моделей на одной видеокарте', 'A fast engine for big MoE models on one GPU'],
     about_lmstudio: ['Программа с каталогом моделей — самый простой старт', 'An app with a model catalog: the easiest start'],
@@ -4008,7 +4020,7 @@
     runScriptsNone: ['Своих скриптов пока нет', 'No own scripts yet'], runAddScript: ['Добавить свой файл…', 'Add an own file…'],
     runYours: ['ваш запуск', 'your start'], runBig: ['Большая модель: первый запуск может занять несколько минут.', 'A big model: the first start can take a few minutes.'],
   })
-  function renderModelTabs(note) { renderAgent(note); renderConn(); renderAnswers() }
+  function renderModelTabs() { renderConn(); renderAnswers() }
   // a form over state.settings.values: drafts kept across redraws, one Save button per tab
   var draft = {}
   function formKit(data, rerender) {
@@ -4054,11 +4066,10 @@
     var card = tab.appendChild(el('div', 'conn-now' + (server.online ? ' ok' : ' off')))
     card.appendChild(el('span', 'state-dot ' + (server.online ? 'ok' : 'err')))
     var info = card.appendChild(el('div', 'conn-now-info'))
-    info.appendChild(el('div', 'conn-now-head', t('nowHead')))
     var what = [KIND_LABELS[server.kind] || t('localServer'), eff.model && eff.model !== 'local' ? shortModel(eff.model) : '',
       server.online && server.ctx ? ctxLabel(server.ctx) : ''].filter(Boolean).join(' · ')
     info.appendChild(el('div', 'conn-now-main', what))
-    info.appendChild(el('div', 'conn-now-sub', server.online ? String(eff.base_url || '').replace(/^https?:[/][/]/, '') : t('nowOff')))
+    info.appendChild(el('div', 'conn-now-sub', String(eff.base_url || '').replace(/^https?:[/][/]/, '') + (server.online ? '' : ' · ' + t('nowOff'))))
     if (withChange) card.appendChild(smallBtn(t('nowChange'), function () { openSection('conn') }, 'outline'))
   }
   function connectTo(x, b) {
@@ -4075,21 +4086,11 @@
     })
   }
 
-  function renderAgent(note) {
-    var tab = $('tab-agent'), data = state.settings
-    sectionHead(tab, t('secModels'), '')
-    if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
-    if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
-    connNow(tab, true)
-    launchSection(tab)
-    if (note) tab.appendChild(el('div', 'muted small', note))
-  }
-
   var foundServers = null
   function renderConn() {
     var tab = $('tab-conn'), data = state.settings
     if (!tab) return
-    sectionHead(tab, t('connTab'), t('connIntro'))
+    sectionHead(tab, t('connTab'), '')
     if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
     if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
     var server = data.server || {}, eff = data.effective || {}, kit = formKit(data, function () { renderModelTabs() })
@@ -4098,7 +4099,6 @@
     var g = tab.appendChild(el('div', 'set-group-row'))
     g.appendChild(el('div', 'set-group', t('foundHead')))
     g.appendChild(smallBtn(t('foundAgain'), function () { foundServers = null; renderConn() }, 'link'))
-    tab.appendChild(el('p', 'set-hint', t('foundSub')))
     var list = tab.appendChild(el('div', 'set-card found-list'))
     function draw() {
       list.innerHTML = ''
@@ -4118,25 +4118,14 @@
         if (cur) r.appendChild(el('span', 'tag ok', '✓ ' + t('connected')))
         else { var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) })) }
       })
-      // installed, not running: started on the Models tab (model + context there)
-      foundServers.forEach(function (x) {
-        if (x.running) return
-        any = true
-        var r = list.appendChild(el('div', 'found-row'))
-        r.appendChild(el('span', 'state-dot off'))
-        var info = r.appendChild(el('div', 'found-info'))
-        info.appendChild(el('div', 'found-name', x.label))
-        info.appendChild(el('div', 'found-sub', t('setupInstalled')))
-        r.appendChild(smallBtn(t('startIt'), function () { launchKind = x.kind; openSection('agent') }, 'outline'))
-      })
       if (!any) list.appendChild(el('div', 'run-none', t('foundNone')))
     }
     draw()
     if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; draw() }, function () { foundServers = []; draw() })
     // an address in any form
     tab.appendChild(el('div', 'set-group', t('addrHead')))
-    tab.appendChild(el('p', 'set-hint', t('addrSub')))
-    var addr = inputEl(t('addrPh'))
+    var addr = inputEl(t('addrPh'), String(eff.base_url || '').replace(/^https?:[/][/]/, '').replace(/[/]v1[/]?$/, ''))
+    addr.title = t('addrSub')
     var go = smallBtn(t('connect'), function () {
       var v = addr.value.trim()
       if (!v) return addr.focus()
@@ -4155,7 +4144,6 @@
     var recent = server.recent || []
     if (recent.length) {
       tab.appendChild(el('div', 'set-group', t('recentServers')))
-      tab.appendChild(el('p', 'set-hint', t('recentSub')))
       var rbox = tab.appendChild(el('div', 'set-card'))
       recent.forEach(function (x) {
         var b = smallBtn(x.cloud ? t('apiKey') + '…' : t('connect'), function () {
@@ -4171,7 +4159,6 @@
     }
     // a cloud API: provider, key, model
     tab.appendChild(el('div', 'set-group', t('cloudHead')))
-    tab.appendChild(el('p', 'set-hint', t('cloudSub')))
     var rows = tab.appendChild(el('div', 'set-rows flat'))
     var clouds = server.clouds || [], shownUrl = String(kit.value('base_url') || eff.base_url || '').replace(/\/+$/, '').toLowerCase()
     var nowCloud = (clouds.filter(function (c) { return c[1].toLowerCase() === shownUrl })[0] || [])[1] || ''
@@ -4179,40 +4166,36 @@
     keyInput.type = 'password'
     keyInput.autocomplete = 'off'
     keyInput.oninput = function () { kit.change('api_key', keyInput.value) }    // emptied again: nothing changes
-    rows.appendChild(row(t('provider'), '', pick([['', '—']].concat(clouds.map(function (c) { return [c[1], c[0]] })), nowCloud, function (v) {
+    rows.appendChild(row(t('cloudProvider'), '', pick([['', '—']].concat(clouds.map(function (c) { return [c[1], c[0]] })), nowCloud, function (v) {
       kit.change('base_url', v || String(eff.base_url || ''))
       renderConn()
     })))
-    rows.appendChild(row(t('apiKey'), t('apiKeySub'), keyInput))
+    rows.appendChild(tipRow(t('apiKey'), t('apiKeySub'), keyInput))
     if (nowCloud) {
       var models = (server.models || []).slice()
       if (data.values.model && models.indexOf(data.values.model) < 0) models.push(data.values.model)
-      rows.appendChild(row(t('model'), t('modelCloud'), pick([['', t('auto') + (eff.model ? ' (' + eff.model + ')' : '')]].concat(models.map(function (m) { return [m, m] })),
+      rows.appendChild(tipRow(t('model'), t('modelCloud'), pick([['', t('auto') + (eff.model ? ' (' + eff.model + ')' : '')]].concat(models.map(function (m) { return [m, m] })),
         kit.value('model'), function (v) { kit.change('model', v) })))
     }
     kit.saveRow(tab)
-    var f = data.files || {}
-    filesNote(tab, [f.config])
   }
 
   function renderAnswers() {
     var tab = $('tab-answers'), data = state.settings
     if (!tab) return
-    sectionHead(tab, t('answers'), t('answersIntro'))
+    sectionHead(tab, t('answers'), '')
     if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
     if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
-    var eff = data.effective || {}, kit = formKit(data, function (n) { renderAnswers(); renderAgent() })
+    var eff = data.effective || {}, kit = formKit(data, function () { renderAnswers() })
     var ans = tab.appendChild(el('div', 'set-rows flat'))
-    ans.appendChild(row(t('effortDefault'), t('effortSub'), pick([['', t('byDefault') + ' (' + (eff.effort || 'medium') + ')']].concat(EFFORTS.map(function (e) { return [e, e] })),
+    ans.appendChild(tipRow(t('effortDefault'), t('effortSub'), pick([['', t('byDefault') + ' (' + (eff.effort || 'medium') + ')']].concat(EFFORTS.map(function (e) { return [e, e] })),
       kit.value('effort'), function (v) { kit.change('effort', v) })))
-    ans.appendChild(row(t('temperature'), t('temperatureSub'), kit.input('temperature', eff.temperature)))
+    ans.appendChild(tipRow(t('temperature'), t('temperatureSub'), kit.input('temperature', eff.temperature)))
     // the rest of the CLI's /sampling: empty = what model_settings / the defaults give
-    ans.appendChild(row('top_p', t('topPSub'), kit.input('top_p', eff.top_p)))
-    ans.appendChild(row('top_k', t('topKSub'), kit.input('top_k', eff.top_k)))
-    ans.appendChild(row('min_p', t('minPSub'), kit.input('min_p', eff.min_p)))
+    ans.appendChild(tipRow('top_p', t('topPSub'), kit.input('top_p', eff.top_p)))
+    ans.appendChild(tipRow('top_k', t('topKSub'), kit.input('top_k', eff.top_k)))
+    ans.appendChild(tipRow('min_p', t('minPSub'), kit.input('min_p', eff.min_p)))
     kit.saveRow(tab)
-    var f = data.files || {}
-    filesNote(tab, [f.state])
   }
 
   // ── Memory: the shared MEMORY.md (every CLI and window session) and the memory files of the chat's folder ──
@@ -4457,8 +4440,8 @@
           box.hidden = true
           draft = { base_url: x.base_url }
           if (x.model) draft.model = x.model
-          openSection('agent')
-          setTimeout(function () { var k = document.querySelector('#tab-agent input[type=password]'); if (k) k.focus() }, 50)
+          openSection('conn')
+          setTimeout(function () { var k = document.querySelector('#tab-conn input[type=password]'); if (k) k.focus() }, 50)
         }
       })
       card.appendChild(el('div', 'setup-group', t('setupFound')))
@@ -4543,7 +4526,7 @@
     }
     scan()
   }
-  var SECTIONS = ['general', 'chat', 'agent', 'conn', 'answers', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
+  var SECTIONS = ['general', 'chat', 'conn', 'answers', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
   function openSettings() {
     $('modal').hidden = false
     renderGeneral()
