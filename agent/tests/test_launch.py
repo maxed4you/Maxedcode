@@ -359,6 +359,24 @@ class Programs(unittest.TestCase):
         self.assertEqual(launch.llama_cli(), str(llama))
         self.assertEqual([w["name"] for w in launch.ways(launch.OTHER)], [kobold.stem])     # a found way of "other"
 
+    def test_llama_models_leave_out_stratas_own_files_projectors_and_twins(self):
+        import json as _json
+        strata = self.root / "Strata"
+        self.make("Strata", "strata.py")
+        self.make("Strata", "bin", "strata.cmd")
+        models = self.root / "models"
+        own = models / "pub" / "repo" / "model-Q4.gguf"
+        packed = models / "IQ3" / "packed-00001-of-00002.gguf"
+        for f in (own, packed, models / "pub" / "repo" / "model.mmproj-f16.gguf", models / "copy" / "model-Q4.gguf"):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            gguf(f, 8192)
+            with open(f, "r+b") as h:
+                h.truncate(60_000_000)
+        (strata / "strata-iq3.json").write_text("﻿" + _json.dumps({"args": ["--native", str(packed)]}), encoding="utf-8")
+        with patch.object(servers, "strata_source", lambda: strata), patch.object(launch, "gguf_dirs", lambda: [models]):
+            names = [m["name"] for m in launch.llama_models()]
+        self.assertEqual(names, ["model-Q4"])          # Strata's packed file, the projector and the twin are gone
+
     def test_a_picked_file_must_be_the_programs_own(self):
         llama = self.make("llama-server" + launch.EXE)
         other = self.make("notepad" + launch.EXE)

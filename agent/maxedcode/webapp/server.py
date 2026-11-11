@@ -1065,7 +1065,7 @@ class Handler(BaseHTTPRequestHandler):
             # servers.start waits up to 180 s for a model to load
             return self.send(200, module("maxedcode.servers", "start", str(data.get("start") or ""), timeout=200))
         if path == "/api/launch":           # start / stop / cancel a model server: {"do", "kind", "way", "model", "ctx"}
-            if data.get("do") in ("way-save", "way-remove", "path"):   # own ways, a program's file: the catalog after it
+            if data.get("do") in ("way-save", "way-remove", "path", "gguf-dir"):   # own ways, files, folders: the catalog after
                 return self.send(200, {**module("maxedcode.launch", "set", body=data, timeout=90), "job": launch_job()})
             return self.send(200, {"job": launch_begin(data)})
         if path == "/api/cli":

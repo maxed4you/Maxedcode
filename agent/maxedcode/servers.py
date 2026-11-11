@@ -496,6 +496,17 @@ def strata_source():
     return None
 
 
+def picked(kind):
+    """A program's file found by "Find programs" or picked by the user (maxedcode.launch keeps them in
+    <home>/launch.json "paths"), while it is still there."""
+    home = Path(os.environ.get("AGENT_HOME") or Path.home() / ".maxedcode")
+    with suppress(Exception):
+        path = (json.loads((home / "launch.json").read_text(encoding="utf-8")).get("paths") or {}).get(kind)
+        if path and Path(path).exists():
+            return path
+    return None
+
+
 def installed():
     """Model servers installed on this PC: [{"kind", "label", "path", "start": [cmd] | None, "how": text}]."""
     if os.name != "nt":
@@ -506,7 +517,7 @@ def installed():
     # Strata (github.com/Niko1221/Strata) starts from its sources / terminal install with `strata launch`
     # (bin\strata.cmd -> strata.py), which asks for the model - no flag picks the last one, `--preset NAME
     # --no-tui` needs a saved preset - so it opens in its own console. The desktop app is never started from here.
-    src = strata_source()
+    src = strata_source() or (Path(picked("strata")) if picked("strata") else None)
     cli = [str(src / "bin" / "strata.cmd")] if src else [strata] if strata else None
     if sp or src:
         out.append({"kind": "strata", "path": str(src or sp), "console": True, "wait": 180,
@@ -514,17 +525,17 @@ def installed():
                     "how": "strata launch (in the Strata folder: bin\\strata.cmd launch; "
                            "no questions: strata launch --preset \"<name>\" --no-tui)"})
     lms = shutil.which("lms") or _exists(home, ".lmstudio", "bin", "lms.exe") or \
-        _exists(home, ".cache", "lm-studio", "bin", "lms.exe")
-    lp = _local("Programs", "LM Studio") or _local("Programs", "lm-studio") or lms or _exists(home, ".lmstudio")
+        _exists(home, ".cache", "lm-studio", "bin", "lms.exe") or picked("lmstudio")
+    lp =_local("Programs", "LM Studio") or _local("Programs", "lm-studio") or lms or _exists(home, ".lmstudio")
     if lp:
         out.append({"kind": "lmstudio", "path": str(lp), "start": [str(lms), "server", "start"] if lms else None,
                     "how": "LM Studio: Developer -> Start Server (or: lms server start)"})
-    oll = shutil.which("ollama") or _local("Programs", "Ollama", "ollama.exe")
+    oll = shutil.which("ollama") or _local("Programs", "Ollama", "ollama.exe") or picked("ollama")
     if oll:
         tray = _local("Programs", "Ollama", "ollama app.exe")
         out.append({"kind": "ollama", "path": str(oll), "start": [str(tray)] if tray else [str(oll), "serve"],
                     "how": "start Ollama from the Start menu (or: ollama serve)"})
-    llama = shutil.which("llama-server")
+    llama = shutil.which("llama-server") or picked("llamacpp")
     if llama:
         out.append({"kind": "llamacpp", "path": llama, "start": None,
                     "how": "llama-server -m model.gguf --port 8080 -c 32768"})
@@ -747,26 +758,26 @@ def _installed_posix():
     """installed() on macOS and Linux: the same servers in their own places (Homebrew, ~/.lmstudio, .app bundles)."""
     home, out, mac = Path.home(), [], sys.platform == "darwin"
     strata = _which("strata")
-    src = strata_source()
+    src = strata_source() or (Path(picked("strata")) if picked("strata") else None)
     sp = strata or _exists(home, ".strata")
     if sp or src:
         # `strata launch` asks for the model in its own terminal: there is no console to open for it from here
         out.append({"kind": "strata", "path": str(src or sp), "start": None,
                     "how": "strata launch (in a terminal; no questions: strata launch --preset \"<name>\" --no-tui)"})
-    lms = _which("lms", home / ".lmstudio" / "bin" / "lms", home / ".cache" / "lm-studio" / "bin" / "lms")
+    lms = _which("lms", home / ".lmstudio" / "bin" / "lms", home / ".cache" / "lm-studio" / "bin" / "lms") or picked("lmstudio")
     lp = (_app("LM Studio.app") if mac else None) or lms or _exists(home, ".lmstudio") or \
         _exists(home, ".cache", "lm-studio")
     if lp:
         out.append({"kind": "lmstudio", "path": str(lp), "start": [str(lms), "server", "start"] if lms else None,
                     "how": "LM Studio: Developer -> Start Server (or: lms server start)"})
-    oll = _which("ollama", "/Applications/Ollama.app/Contents/Resources/ollama")
+    oll = _which("ollama", "/Applications/Ollama.app/Contents/Resources/ollama") or picked("ollama")
     oapp = _app("Ollama.app") if mac else None
     if oll or oapp:
         out.append({"kind": "ollama", "path": str(oapp or oll),
                     "start": ["open", "-a", str(oapp)] if oapp else [str(oll), "serve"],
                     "how": "start the Ollama app (or: ollama serve)" if mac else
                            "systemctl start ollama (or: ollama serve)"})
-    llama = _which("llama-server")
+    llama = _which("llama-server") or picked("llamacpp")
     if llama:
         out.append({"kind": "llamacpp", "path": llama, "start": None,
                     "how": "llama-server -m model.gguf --port 8080 -c 32768"})

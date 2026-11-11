@@ -3986,7 +3986,7 @@
         // Strata's sizes read best as "IQ3_XXS" / "Coder · IQ1_M"; the full name goes under it
         var strata = s.kind === 'strata'
         info.appendChild(el('span', 'run-model-name', strata ? strataName(m.id) : m.name))
-        var facts = [strata ? m.name : '', m.params, m.quant, sizeLabel(m.size), m.max_ctx ? t('runUpTo') + ' ' + ctxLabel(m.max_ctx) : '',
+        var facts = [strata ? m.name : '', m.where || '', m.params, m.quant, sizeLabel(m.size), m.max_ctx ? t('runUpTo') + ' ' + ctxLabel(m.max_ctx) : '',
           !m.max_ctx && m.ctx ? t('runSetUp') + ' ' + ctxLabel(m.ctx) : ''].filter(Boolean)
         if (facts.length) info.appendChild(el('span', 'run-model-sub', facts.join(' · ')))
         r.title = m.id
@@ -4004,6 +4004,19 @@
           b.title = c.toLocaleString() + ' ' + t('tokens')
           b.onclick = function () { save('ctx', c); drawLaunch() }
         })
+      }
+      if (s.kind === 'llamacpp') {
+        var addDir = body.appendChild(smallBtn('+ ' + t('ggufDir'), function () {
+          askFolder('', t('ggufDir')).then(function (r) {
+            if (!r || !r.path) return
+            api('/api/launch', { do: 'gguf-dir', path: r.path }).then(function (d) {
+              if (d && d.servers) launchData = Object.assign(d, { job: launchData && launchData.job })
+              redrawLaunch()
+            })
+          })
+        }, 'link'))
+        addDir.classList.add('run-add')
+        addDir.title = (s.dirs || []).join('\n')
       }
       optionsBox(body, s, p)
     }
@@ -4031,6 +4044,9 @@
   // a cloud API with its key, the recent ones. Answers: sampling and the default effort.
   Object.assign(TEXT, {
     connTab: ['Подключение', 'Connection'],
+    ggufDir: ['Папка с моделями…', 'Models folder…'],
+    notRunning: ['установлен, не запущен', 'installed, not running'],
+    notRunningSub: ['Запустите его как обычно (или во вкладке «Запуск моделей») — агент подключится сам', 'Start it as usual (or on the Start models tab): the agent connects by itself'],
     findPrograms: ['Найти программы', 'Find programs'], findBusy: ['Ищу на дисках…', 'Looking…'],
     findSub: ['Поискать llama-server, Ollama, LM Studio, Strata и KoboldCpp на дисках этого компьютера (несколько секунд)', 'Look for llama-server, Ollama, LM Studio, Strata and KoboldCpp on this computer\'s disks (a few seconds)'],
     findFound: ['Найдено', 'Found'], findNone: ['Новых программ не найдено', 'No new programs found'],
@@ -4051,7 +4067,7 @@
       'Where the agent sends its requests: a server on this computer, another computer on the network, or a cloud API.'],
     foundHead: ['На этом компьютере', 'On this computer'], foundSub: ['Серверы моделей на этом компьютере. Нажмите «Подключить» — больше ничего не нужно.', 'Model servers on this computer. Press Connect: nothing else is needed.'],
     foundScan: ['Ищу серверы…', 'Looking for servers…'], foundAgain: ['Искать снова', 'Search again'],
-    foundNone: ['Ничего не запущено. Запустите модель как обычно — агент подключится сам.', 'Nothing runs. Start a model as usual: the agent connects by itself.'], cloudProvider: ['Провайдер', 'Provider'],
+    foundNone: ['Сейчас ничего не запущено — запустите модель как обычно, агент подключится сам.', 'Nothing runs now: start a model as usual and the agent connects by itself.'], cloudProvider: ['Провайдер', 'Provider'],
     connect: ['Подключить', 'Connect'], connected: ['Подключено', 'Connected'], startIt: ['Запустить…', 'Start…'],
     addrHead: ['Адрес', 'Address'],
     addrSub: ['Сейчас используется этот. Другой компьютер или свой сервер — впишите IP или адрес в любом виде (192.168.0.10, 192.168.0.10:1234, http://host/v1), порт и /v1 подберутся сами.', 'This one is in use. Another computer or an own server: type an IP or an address in any form (192.168.0.10, 192.168.0.10:1234, http://host/v1); the port and /v1 are found.'],
@@ -4194,7 +4210,17 @@
         if (cur) r.appendChild(el('span', 'tag ok', '✓ ' + t('connected')))
         else { var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) })) }
       })
-      if (!any) list.appendChild(el('div', 'run-none', t('foundNone')))
+      if (!any) list.appendChild(el('div', 'found-note', t('foundNone')))
+      // installed here but not running: shown so it is clear what this PC has; nothing is started from here
+      foundServers.forEach(function (x) {
+        if (x.running) return
+        var r = list.appendChild(el('div', 'found-row off'))
+        r.appendChild(el('span', 'state-dot off'))
+        var info = r.appendChild(el('div', 'found-info'))
+        info.appendChild(el('div', 'found-name', x.label))
+        info.appendChild(el('div', 'found-sub', t('notRunning') + (x.path ? ' · ' + x.path : '')))
+        r.title = t('notRunningSub')
+      })
       if (Array.isArray(lanServers) && !lanServers.length) list.appendChild(el('div', 'found-note', t('lanNone') + (lanNets.length ? ' (' + lanNets.join(', ') + ')' : '')))
     }
     draw()

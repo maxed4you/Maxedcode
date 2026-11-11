@@ -1152,7 +1152,7 @@ def gguf_files(limit=200, roots=None):
             if len(Path(dirpath).relative_to(root).parts) >= 5:
                 dirnames[:] = []
             for f in files:
-                if not f.lower().endswith(".gguf") or f.lower().startswith("mmproj"):
+                if not f.lower().endswith(".gguf") or "mmproj" in f.lower():
                     continue
                 m = SHARD.search(f)
                 if m and m.group(1) != "00001":
@@ -1201,13 +1201,69 @@ def gguf_ctx(path):
     return None
 
 
+def strata_files():
+    """The .gguf files Strata's own run configs use (<strata>/strata-*.json): Strata's packed quantizations,
+    which a plain llama-server does not load - not offered as llama.cpp models."""
+    src = servers.strata_source() or (Path(saved_path("strata")) if saved_path("strata") else None)
+    out = set()
+    if not src:
+        return out
+
+    def walk(x):
+        if isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+        elif isinstance(x, str) and x.lower().endswith(".gguf"):
+            out.add(str(Path(x)).lower())
+    with suppress(OSError):
+        for conf in src.glob("strata-*.json"):
+            with suppress(Exception):
+                walk(json.loads(conf.read_text(encoding="utf-8-sig")))
+    return out
+
+
+def gguf_source(path):
+    """Where a model file comes from, said shortly: LM Studio's folder, the Hugging Face / llama.cpp cache, or
+    the folder itself."""
+    h = Path.home()
+    names = [(lms_folder(), "LM Studio"), (h / ".lmstudio" / "models", "LM Studio"),
+             (h / ".cache" / "lm-studio" / "models", "LM Studio"),
+             (h / ".cache" / "huggingface" / "hub", "Hugging Face"), (h / ".cache" / "llama.cpp", "llama.cpp cache")]
+    for root, name in names:
+        with suppress(ValueError, TypeError):
+            Path(path).relative_to(root)
+            return name
+    return str(Path(path).parent)
+
+
 def llama_models():
+    """The .gguf models llama-server can run: every model file of the usual folders and the user's own, but
+    Strata's own (strata_files)."""
+    skip, seen = strata_files(), set()
     out = []
     for p, size in gguf_files():
+        if str(p).lower() in skip or (p.name.lower(), size) in seen:     # the same file in two folders: once
+            continue
+        seen.add((p.name.lower(), size))
         out.append({"id": str(p), "name": SHARD.sub(".gguf", p.name)[:-5], "size": size, "max_ctx": gguf_ctx(p),
-                    "vision": any(x.name.lower().startswith("mmproj") for x in p.parent.glob("*.gguf")),
-                    "path": str(p.parent)})
+                    "vision": any("mmproj" in x.name.lower() for x in p.parent.glob("*.gguf")),
+                    "path": str(p.parent), "where": gguf_source(p)})
     return out
+
+
+def add_gguf_dir(path):
+    """An own folder of .gguf models for llama.cpp (Settings -> Start models -> llama.cpp -> + Models folder)."""
+    d = Path(str(path or "").strip().strip('"'))
+    if not d.is_dir():
+        return False
+    st = load_state()
+    dirs = [x for x in st.get("gguf_dirs", []) if str(x).lower() != str(d).lower()]
+    st["gguf_dirs"] = [str(d)] + dirs
+    save_state(st)
+    return True
 
 
 def llama_start(model, ctx, say, opts=None):
@@ -1235,7 +1291,7 @@ def llama_start(model, ctx, say, opts=None):
     kv = opt(opts, "llamacpp", "kv")
     if kv:
         cmd += ["-ctk", kv, "-ctv", kv]
-    proj = sorted(Path(model).parent.glob("mmproj*.gguf"))
+    proj = sorted(Path(model).parent.glob("*mmproj*.gguf"))
     if proj and opt(opts, "llamacpp", "vision") != "off":
         cmd += ["--mmproj", str(proj[0])]
     cmd += flags
@@ -1525,6 +1581,8 @@ def main(argv):
             save_way(body.get("kind") or OTHER, body.get("name"), body["command"], body.get("base") or "", body.get("id"))
         elif command == "set" and body.get("do") == "way-remove" and body.get("id"):
             remove_way(body["id"])
+        elif command == "set" and body.get("do") == "gguf-dir":
+            add_gguf_dir(body.get("path"))
         elif command == "set" and body.get("do") == "path":
             if not set_path(body.get("kind"), body.get("path")):
                 print(json.dumps({**catalog(), "error": "this is not the program's file"}, ensure_ascii=False))

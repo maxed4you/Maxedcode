@@ -877,3 +877,5 @@ body, .composer, .dialog, .menu { transition: background-color 0.2s ease, color 
 .run-note + .btn.run-go { margin-left: 0; }
 .run-bar-top { display: flex; justify-content: flex-end; gap: 4px; padding: 4px 8px 0; }
 .run-bar-top + .run-seg { border-top: 0; }
+.found-row.off .found-name { color: var(--text); }
+.found-list .found-note:first-child { padding-top: 10px; }
