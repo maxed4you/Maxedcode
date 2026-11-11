@@ -175,7 +175,7 @@ server.pick_file = lambda start: []
 server.open_in = lambda path, app: False
 server.recycle = lambda p: shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
 os.startfile = lambda *a, **k: None
-server.main(["server", "--port", sys.argv[1]])
+server.main(["server", "--serve", "--port", sys.argv[1]])   # --serve: the bare server on every system (no window, no browser)
 '''
 
 
