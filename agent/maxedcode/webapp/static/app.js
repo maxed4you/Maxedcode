@@ -78,7 +78,7 @@
     cloudTab: ['Облако', 'Cloud'],
     secChat: ['Чат', 'Chat'], secModels: ['Модели', 'Models'], secTools: ['Инструменты', 'Tools'], secMcp: ['MCP', 'MCP'],
     secHooks: ['Хуки', 'Hooks'], secPerms: ['Разрешения', 'Permissions'], secMemory: ['Память', 'Memory'],
-    modelsIntro: ['Локальный сервер модели главного агента — тот же, что /server в терминале. Пустое поле — как по умолчанию.', 'The local model server of the main agent, the same as /server in the terminal. An empty field keeps the default.'],
+    modelsIntro: ['Где работает модель агента и как она отвечает. То же, что /local и /server в терминале.', 'Where the agent\'s model runs and how it answers: the same as /local and /server in the terminal.'],
     localServer: ['Локальный сервер', 'Local server'], online: ['отвечает', 'answering'],
     memoryIntro: ['Общая память видна каждой сессии терминала и окна; файлы памяти — у папки чата.', 'The shared memory is seen by every terminal and window session; memory files belong to the chat folder.'],
     toolsIntro: ['Навыки, свои команды, подагенты и встроенные инструменты — те же файлы, что у CLI.', 'Skills, custom commands, subagents and built-in tools: the same files as the CLI.'],
@@ -1916,7 +1916,7 @@
   }
   // The terminal's commands that are a button or a setting here: done right away when they carry a value, else the
   // settings section that does the same opens. Nothing goes to the model (it would only read "/effort high" as text).
-  var CLI_SECTIONS = { model: 'agent', models: 'agent', server: 'agent', sampling: 'agent', cloud: 'cloud', mcp: 'mcp',
+  var CLI_SECTIONS = { model: 'agent', models: 'agent', server: 'agent', local: 'agent', settings: 'general', config: 'general', sampling: 'agent', cloud: 'cloud', mcp: 'mcp',
     hooks: 'hooks', permissions: 'perms', allow: 'perms', deny: 'perms', memory: 'memory', tools: 'cli', commands: 'cli',
     agents: 'cli', skill: 'cli' }
   function openSection(name) {
@@ -2231,7 +2231,15 @@
   }
   function setMode(m) { if (state.chat) { state.chat.mode = m; remember(state.chat) } renderSeats() }
   function effective() { return (state.settings && state.settings.effective && state.settings.effective.effort) || 'medium' }
+  // the model button names the model in use (short: no folder, no publisher), so nobody wonders what answers
+  function shortModel(m) { return String(m || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '').replace(/-0+1-of-\d+$/, '') }
   function renderSeats() {
+    var eff = (state.settings && state.settings.effective) || {}, mn = $('model-name')
+    if (mn) {
+      var name = eff.model && eff.model !== 'local' ? shortModel(eff.model) : ''
+      mn.textContent = name.length > 28 ? name.slice(0, 27) + '…' : name || 'maxedcode'
+      mn.parentNode.title = (eff.model || '') + (eff.base_url ? '\n' + eff.base_url : '')
+    }
     $('mode-name').textContent = MODE_NAMES[curMode()] || 'Plan'
     $('effort-name').textContent = tl(EFFORT_NAMES[curEffort() || effective()] || ['', ''])
   }
@@ -2350,12 +2358,29 @@
       { label: 'Plan', sub: t('planSub'), check: curMode() === 'plan', run: function () { setMode('plan') } },
     ])
   }
+  // The model menu: the effort, then the local models of the program in use (a click loads one with its last
+  // context), its stop, and Settings -> Models. Loaded once on the first open, then from the cache.
   function modelMenu() {
     var model = state.settings && state.settings.effective && state.settings.effective.model
-    showMenu($('model-btn'), [
-      { node: effortPanel() }, '-',
-      { label: t('model'), value: 'maxedcode', submenu: function () { return [{ label: 'maxedcode' + (model ? ' · ' + model : ''), check: true, run: function () {} }] } },
-    ], { align: 'right' })
+    var items = [{ node: effortPanel() }, '-']
+    var s = launchData && launchDefault(), job = launchData && launchData.job, busy = !!(job && job.result === null)
+    if (s && s.installed) {
+      items.push({ head: t('runMenuHead') + ' · ' + s.label + (s.running ? '' : ' · ' + t('runOff').toLowerCase()) })
+      ;(s.models || []).slice(0, 8).forEach(function (m) {
+        var on = s.running && m.loaded
+        items.push({ label: m.name, value: on && s.loaded.ctx ? ctxLabel(s.loaded.ctx) : ctxLabel(m.pick_ctx), check: on, title: m.id,
+          run: function () { if (!on && !busy && s.can_start) launchAct({ do: 'start', kind: s.kind, model: m.id, ctx: m.pick_ctx }) } })
+      })
+      if (busy) items.push({ label: (job.do === 'stop' ? t('runStopping') : t('setupStarting')) + ' ' + job.secs + ' ' + t('runSecs'), run: function () { openSection('agent') } })
+      if (s.running && !busy) items.push({ label: t('runStop') + ' ' + s.label, icon: 'square', danger: true, run: function () { launchAct({ do: 'stop', kind: s.kind }) } })
+      items.push('-')
+    } else if (!model) {
+      items.push({ label: t('model'), value: t('offline'), run: function () { openSection('agent') } })
+    }
+    if (model && !(s && s.installed && s.running && isCurrent(s))) items.push({ label: t('model'), value: model, check: true, run: function () { openSection('agent') } })
+    items.push({ label: t('runMenuSettings'), icon: 'sliders', run: function () { openSection('agent') } })
+    showMenu($('model-btn'), items, { align: 'right' })
+    if (!launchData) loadLaunch().then(function () { if (!$('menu').hidden && menuState.owner === $('model-btn')) modelMenu() })
   }
   var EFFORT_NAMES = { off: ['Выкл', 'Off'], low: ['Низкое', 'Low'], medium: ['Среднее', 'Medium'], high: ['Высокое', 'High'], ultra: ['Ultra', 'Ultra'] }
   // Effort as a "Faster - Smarter" slider (the chat's own; "default" follows Settings -> maxedcode).
@@ -2474,7 +2499,7 @@
   // ── "/" and "@" in the input ──
   // the third field: a button does the same (mode picker, New session, the chat's menu), so the command is offered
   // only once its first letters are typed, not in the list a bare "/" opens
-  var COMMANDS = [['btw', 'cmdBtw'], ['undo', 'cmdUndo'], ['compact', 'cmdCompact'], ['context', 'cmdContext'],
+  var COMMANDS = [['local', 'cmdLocal'], ['settings', 'cmdSettings'], ['btw', 'cmdBtw'], ['undo', 'cmdUndo'], ['compact', 'cmdCompact'], ['context', 'cmdContext'],
     ['run', 'cmdRun', 1], ['redo', 'cmdRedo', 1], ['cache', 'cmdCache', 1], ['init', 'cmdInit', 1], ['help', 'cmdHelp', 1],
     ['plan', 'cmdPlan', 1], ['auto', 'cmdAuto', 1], ['manual', 'cmdManual', 1], ['export', 'cmdExport', 1], ['new', 'cmdNew', 1]]
   // the CLI's commands that are buttons/settings in the window (shown by /help)
@@ -3541,6 +3566,249 @@
   }
   function clipText(x, n) { x = String(x || ''); return x.length > n ? x.slice(0, n) + '…' : x }
 
+  // ── Models → Run a model on this PC (maxedcode/launch.py): a server, a model, a context, one Start button ──
+  Object.assign(TEXT, {
+    runHead: ['Запуск модели на этом компьютере', 'Run a model on this computer'],
+    runIntro: ['Выберите программу, модель и контекст — и нажмите «Запустить». maxedcode сам запустит сервер, загрузит модель и переключится на неё.',
+      'Pick a program, a model and a context, then Start: maxedcode starts the server, loads the model and switches to it.'],
+    runRunning: ['Работает', 'Running'], runOff: ['Не запущен', 'Not running'], runNotInstalled: ['Не установлен', 'Not installed'],
+    runStart: ['Запустить', 'Start'], runRestart: ['Перезапустить с этой моделью', 'Restart with this model'],
+    runStop: ['Остановить', 'Stop'], runStopping: ['Останавливаю…', 'Stopping…'], runCancel: ['Отменить', 'Cancel'],
+    runActive: ['Запущено', 'Running'], runUseIt: ['Работать с ним', 'Use it'],
+    runModel: ['Модель', 'Model'], runCtx: ['Контекст', 'Context'],
+    runCtxSub: ['Сколько текста модель помнит за раз. Больше — дольше без сжатия, но нужно больше видеопамяти. Удобно 32K–64K.',
+      'How much text the model holds at once. More: longer without compaction, but more graphics memory. 32K-64K is comfortable.'],
+    runSetUp: ['настроена на', 'set up for'], runNoLoaded: ['модель не загружена', 'no model loaded'], runLoading: ['Запускаю', 'Starting'],
+    runNoModels: ['Моделей пока нет', 'No models yet'], runLoaded: ['загружена', 'loaded'], runVision: ['видит картинки', 'reads pictures'],
+    runUpTo: ['до', 'up to'], runScript: ['Свой скрипт запуска', 'Own start script'],
+    runScriptSub: ['Если сервер запускается вашим .bat/.sh (свои флаги, пресеты), выберите его — он откроется в своём окне. «Нет» — обычный запуск с моделью и контекстом выше.',
+      'If the server starts from your own .bat/.sh (own flags, presets), pick it: it opens in its own window. None: the usual start with the model and context above.'],
+    runScriptNone: ['Нет — обычный запуск', 'None: the usual start'], runPickFile: ['Выбрать файл…', 'Pick a file…'],
+    runDownload: ['Скачать', 'Download'], runRecheck: ['Проверить снова', 'Check again'],
+    runNotInstalledSub: ['Установите программу, затем нажмите «Проверить снова».', 'Install it, then Check again.'],
+    runNoCli: ['Не найдена команда запуска', 'Its start command is not found'],
+    runOllamaPull: ['Скачайте модель в терминале, например:', 'Download a model in a terminal, for example:'],
+    runDone: ['Готово', 'Ready'], runFailed: ['Не запустилось', 'Did not start'], runStopped: ['Сервер остановлен', 'Server stopped'],
+    runScan: ['Ищу серверы и модели…', 'Looking for servers and models…'], runCurrent: ['сейчас у агента', 'the agent uses it'],
+    runMenuHead: ['Локальная модель', 'Local model'], runMenuSettings: ['Модели и серверы…', 'Models and servers…'],
+    runSecs: ['с', 's'], cmdLocal: ['Запустить модель на этом компьютере', 'Run a model on this computer'],
+    cmdSettings: ['Все настройки', 'All settings'], connHead: ['Подключение', 'Connection'],
+    connSub: ['Адрес сервера, который использует агент: этот компьютер, другой компьютер в сети или облачный API по ключу.',
+      'The server the agent talks to: this computer, another one on the network, or a cloud API with a key.'],
+  })
+  var KIND_LABELS = { strata: 'Strata', lmstudio: 'LM Studio', ollama: 'Ollama', llamacpp: 'llama.cpp', vllm: 'vLLM', koboldcpp: 'KoboldCpp',
+    jan: 'Jan', tgwui: 'text-generation-webui', openai: 'OpenAI', anthropic: 'Claude', gemini: 'Gemini', openrouter: 'OpenRouter',
+    deepseek: 'DeepSeek', groq: 'Groq', mistral: 'Mistral', xai: 'xAI', together: 'Together AI', cerebras: 'Cerebras' }
+  var launchData = null, launchKind = '', launchPick = {}, launchTimer = null
+  function ctxLabel(n) { return n >= 1048576 ? Math.round(n / 1048576) + 'M' : Math.round(n / 1024) + 'K' }
+  function sizeLabel(b) { return b ? (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB') : '' }
+  function loadLaunch() {
+    return api('/api/launch').then(function (d) {
+      launchData = d
+      if (d && d.job && d.job.result === null) followJob()
+      return d
+    }, function () { launchData = { servers: [], error: 'no answer' } })
+  }
+  function launchServer(kind) { return ((launchData && launchData.servers) || []).filter(function (s) { return s.kind === kind })[0] }
+  // which program is shown: the chosen one, else the one the agent uses, a running one, the last started, one installed
+  function launchDefault() {
+    var list = (launchData && launchData.servers) || [], cur = ((state.settings && state.settings.server) || {}).kind
+    var by = function (f) { return list.filter(f)[0] }
+    var s = launchServer(launchKind) || by(function (x) { return x.kind === cur && x.installed }) || by(function (x) { return x.running }) ||
+      launchServer(launchData && launchData.last) || by(function (x) { return x.installed }) || list[0]
+    return s
+  }
+  function pickOf(s) {
+    var p = launchPick[s.kind] || {}
+    var models = s.models || []
+    var m = models.filter(function (x) { return x.id === p.model })[0] || models.filter(function (x) { return x.loaded })[0] ||
+      models.filter(function (x) { return x.id === s.last_model })[0] || models[0] || null
+    var ctx = p.ctx || (m && m.loaded && s.loaded && s.loaded.ctx) || (m && m.pick_ctx) || 32768
+    var script = p.script !== undefined ? p.script : s.script || ''
+    return { model: m, ctx: ctx, script: script }
+  }
+  function isCurrent(s) {
+    var b = ((state.settings && state.settings.effective) || {}).base_url || ''
+    return !!b && b.replace(/\/+$/, '').toLowerCase() === s.base.replace(/\/+$/, '').toLowerCase()
+  }
+  function followJob() {
+    if (launchTimer) return
+    launchTimer = setInterval(function () {
+      api('/api/launch?job=1').then(function (r) {
+        var j = r && r.job
+        if (launchData) launchData.job = j
+        if (!j || j.result !== null) {
+          clearInterval(launchTimer)
+          launchTimer = null
+          if (j && j.result) {
+            if (j.result.ok && j.do === 'start') toast(t('runDone') + ': ' + (j.result.model || j.model || '') + (j.result.ctx ? ' · ' + ctxLabel(j.result.ctx) : ''), 4000)
+            else if (j.result.ok) toast(t('runStopped'), 2500)
+          }
+          return Promise.all([loadLaunch(), api('/api/settings').then(gotSettings)]).then(redrawLaunch)
+        }
+        drawJob()
+      }, function () {})
+    }, 1000)
+  }
+  function launchAct(body) {
+    api('/api/launch', body).then(function (r) {
+      if (launchData) launchData.job = r.job
+      if (r.job && r.job.error) { toast(r.job.error, 4000); return }
+      redrawLaunch()
+      followJob()
+    })
+  }
+  var launchBox = null, jobBox = null
+  function redrawLaunch() { if (launchBox && launchBox.isConnected) drawLaunch(); }
+  function drawJob() {
+    if (!jobBox || !jobBox.isConnected) return
+    var j = launchData && launchData.job
+    if (j && j.result !== null && j.kind !== launchKind) j = null     // a finished start of another program
+    jobBox.innerHTML = ''
+    jobBox.hidden = !j
+    if (!j) return
+    var busy = j.result === null, ok = j.result && j.result.ok
+    var head = jobBox.appendChild(el('div', 'run-job-head'))
+    head.appendChild(busy ? el('span', 'spin') : el('span', 'state-dot ' + (ok ? 'ok' : 'err')))
+    // the program's own line (a command, "waiting for…", the log) goes under the bar; the head says it in words
+    var raw = String(j.lines[0] || '').replace(/\s*…?\s*\d+ s(?= ·|$)/, '').replace(/^(loading|waiting for) [^·]*(· )?/, '')
+    var what = busy ? (j.do === 'stop' ? t('runStopping') : t('runLoading') + (j.model ? ' ' + String(j.model).split(/[\/]/).pop() : '') +
+      (j.pct !== null && j.pct !== undefined ? ' · ' + Math.round(j.pct) + '%' : '')) :
+      ok ? (j.do === 'stop' ? t('runStopped') : t('runDone') + (j.result.model ? ': ' + j.result.model : '') + (j.result.ctx ? ' · ' + ctxLabel(j.result.ctx) : ''))
+        : t('runFailed') + ': ' + (j.result.error || j.result.text || '')
+    var txt = head.appendChild(el('span', 'run-job-text', what))
+    txt.title = what
+    head.appendChild(el('span', 'run-job-secs', j.secs + ' ' + t('runSecs')))
+    if (busy) head.appendChild(smallBtn(t('runCancel'), function () { launchAct({ do: 'cancel' }) }, 'link'))
+    if (busy) {
+      if (raw) jobBox.appendChild(el('div', 'run-job-raw', raw)).title = raw
+      var bar = jobBox.appendChild(el('div', 'run-bar' + (j.pct === null || j.pct === undefined ? ' wait' : '')))
+      var fill = bar.appendChild(el('div', 'run-bar-fill'))
+      if (j.pct !== null && j.pct !== undefined) fill.style.width = Math.max(3, Math.min(100, j.pct)) + '%'
+    }
+  }
+  function launchSection(tab) {
+    launchBox = el('div', 'run-card')
+    tab.appendChild(el('div', 'set-group', t('runHead')))
+    tab.appendChild(el('p', 'set-hint', t('runIntro')))
+    tab.appendChild(launchBox)
+    drawLaunch()
+    if (!launchData) loadLaunch().then(redrawLaunch)
+  }
+  function drawLaunch() {
+    var box = launchBox
+    box.innerHTML = ''
+    if (!launchData) { var w = box.appendChild(el('div', 'run-empty')); w.appendChild(el('span', 'spin')); w.appendChild(el('span', 'muted', t('runScan'))); return }
+    var list = launchData.servers || []
+    var s = launchDefault()
+    if (!s) { box.appendChild(el('div', 'error-box', launchData.error || t('setupNone'))); return }
+    launchKind = s.kind
+    var job = launchData.job, busy = !!(job && job.result === null)
+    // the programs as segments: a dot says running (green), installed (grey), missing (hollow)
+    var seg = box.appendChild(el('div', 'run-seg'))
+    list.forEach(function (x) {
+      var b = seg.appendChild(el('button', x.kind === s.kind ? 'on' : ''))
+      b.appendChild(el('span', 'state-dot ' + (x.running ? 'ok' : x.installed ? 'off' : 'none')))
+      b.appendChild(el('span', '', x.label))
+      b.title = x.running ? t('runRunning') : x.installed ? t('runOff') : t('runNotInstalled')
+      b.onclick = function () { launchKind = x.kind; drawLaunch() }
+    })
+    var body = box.appendChild(el('div', 'run-body'))
+    // the state of this program, its stop button
+    var st = body.appendChild(el('div', 'run-state'))
+    st.appendChild(el('span', 'state-dot ' + (s.running ? 'ok' : s.installed ? 'off' : 'none')))
+    var line = s.running ? t('runRunning') + (s.loaded && s.loaded.model ? ' · ' + s.loaded.model + (s.loaded.ctx ? ' · ' + ctxLabel(s.loaded.ctx) : '') : ' · ' + t('runNoLoaded'))
+      : s.installed ? t('runOff') : t('runNotInstalled')
+    st.appendChild(el('span', 'run-state-text', line))
+    if (s.running && isCurrent(s)) st.appendChild(el('span', 'tag', t('runCurrent')))
+    st.appendChild(el('span', 'grow'))
+    if (s.running && !isCurrent(s)) st.appendChild(smallBtn(t('runUseIt'), function () {
+      api('/api/settings', { base_url: s.base, server: s.kind, model: s.kind === 'lmstudio' || s.kind === 'ollama' ? (s.loaded && s.loaded.model) || null : null })
+        .then(function (d) { if (!d.error) { gotSettings(d); renderAgent() } else toast(d.error, 4000) })
+    }, 'outline'))
+    if (s.running) {
+      var stopB = st.appendChild(smallBtn(t('runStop'), function () { launchAct({ do: 'stop', kind: s.kind }) }, 'danger'))
+      stopB.disabled = busy
+    }
+    if (!s.installed) {
+      body.appendChild(el('p', 'run-about', s.about))
+      var acts = body.appendChild(el('div', 'run-actions'))
+      acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
+      acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
+      acts.appendChild(el('span', 'muted small', t('runNotInstalledSub')))
+      return
+    }
+    var p = pickOf(s), models = s.models || []
+    var save = function (k, v) { launchPick[s.kind] = Object.assign(pickOf(s), launchPick[s.kind] || {}); launchPick[s.kind][k] = v; if (k === 'model') delete launchPick[s.kind].ctx }
+    launchPick[s.kind] = { model: p.model && p.model.id, ctx: p.ctx, script: p.script }
+    var scripted = s.kind === 'strata' && !!p.script
+    // models: one radio row each, the facts that help choosing (size, quantization, the most context it takes)
+    body.appendChild(el('div', 'run-label', t('runModel')))
+    if (!models.length) {
+      var none = body.appendChild(el('div', 'run-none', t('runNoModels')))
+      if (s.kind === 'ollama') {
+        none.appendChild(el('div', 'muted small', t('runOllamaPull')))
+        var cmd = none.appendChild(el('div', 'pick-row'))
+        cmd.appendChild(el('code', 'path-val', s.hint || 'ollama pull qwen3:8b'))
+        cmd.appendChild(button(t('brCopy'), function () { copy(s.hint || 'ollama pull qwen3:8b') }))
+      }
+    }
+    var ml = models.length ? body.appendChild(el('div', 'run-models' + (scripted ? ' dim' : ''))) : null
+    models.forEach(function (m) {
+      var r = ml.appendChild(el('button', 'run-model' + (p.model && p.model.id === m.id ? ' on' : '')))
+      r.appendChild(el('span', 'run-radio'))
+      var info = r.appendChild(el('span', 'run-model-info'))
+      info.appendChild(el('span', 'run-model-name', m.name))
+      var facts = [m.params, m.quant, sizeLabel(m.size), m.max_ctx ? t('runUpTo') + ' ' + ctxLabel(m.max_ctx) : '',
+        !m.max_ctx && m.ctx ? t('runSetUp') + ' ' + ctxLabel(m.ctx) : '', s.kind === 'strata' ? m.id : ''].filter(Boolean)
+      if (facts.length) info.appendChild(el('span', 'run-model-sub', facts.join(' · ')))
+      if (m.path || m.id !== m.name) r.title = m.path ? m.id : m.id
+      if (m.vision) r.appendChild(el('span', 'tag', t('runVision')))
+      if (m.loaded) r.appendChild(el('span', 'tag ok', t('runLoaded')))
+      r.onclick = function () { save('model', m.id); drawLaunch() }
+    })
+    // context: the sizes this model takes
+    if (p.model) {
+      var cr = body.appendChild(el('div', 'run-ctx' + (scripted ? ' dim' : '')))
+      var cl = cr.appendChild(el('div', 'run-label', t('runCtx')))
+      cl.title = t('runCtxSub')
+      var chips = cr.appendChild(el('div', 'run-chips'))
+      ;(p.model.ctxs || [16384, 32768, 65536]).forEach(function (c) {
+        var b = chips.appendChild(el('button', c === p.ctx ? 'on' : '', ctxLabel(c)))
+        b.title = c.toLocaleString() + ' ' + t('tokens')
+        b.onclick = function () { save('ctx', c); drawLaunch() }
+      })
+      body.appendChild(el('p', 'set-hint run-ctx-hint', t('runCtxSub')))
+    }
+    // Strata: the user's own start scripts (a launcher's .bat) instead of the plain start
+    if (s.kind === 'strata') {
+      var opts = [['', t('runScriptNone')]].concat((s.scripts || []).map(function (x) { return [x.path, x.name] }))
+      if (p.script && !opts.some(function (o) { return o[0] === p.script })) opts.push([p.script, p.script.split(/[\\/]/).pop()])
+      var sr = el('div', 'pick-row')
+      sr.appendChild(pick(opts, p.script, function (v) { save('script', v); drawLaunch() }))
+      sr.appendChild(button(t('runPickFile'), function () {
+        api('/api/pick-file', { start: p.script ? parentOf(p.script) : '' }).then(function (r) {
+          var f = r && r.paths && r.paths[0]
+          if (f) { save('script', f); drawLaunch() }
+        })
+      }))
+      var srow = body.appendChild(row(t('runScript'), t('runScriptSub'), sr, true))
+      srow.classList.add('run-script')
+    }
+    // the one main action
+    var foot = body.appendChild(el('div', 'run-foot'))
+    jobBox = foot.appendChild(el('div', 'run-job'))
+    drawJob()
+    var same = s.running && p.model && p.model.loaded && (!s.loaded.ctx || s.loaded.ctx === p.ctx) && !scripted
+    var label = same ? '✓ ' + t('runActive') : s.running && s.loaded && s.loaded.model ? t('runRestart') : t('runStart')
+    var go = foot.appendChild(el('button', 'btn run-go', label))
+    go.disabled = busy || same || !s.can_start || (!p.model && !scripted)
+    if (!s.can_start) go.title = t('runNoCli') + (s.how ? ': ' + s.how : '')
+    go.onclick = function () {
+      launchAct({ do: 'start', kind: s.kind, model: p.model ? p.model.id : null, ctx: p.ctx, script: scripted ? p.script : null })
+    }
+  }
+
   // ── Models: the local model server of the main agent ──
   var draft = {}
   function renderAgent(note) {
@@ -3567,11 +3835,14 @@
       return i
     }
     var server = data.server || {}, eff = data.effective || {}
+    launchSection(tab)
     // the server card: name + state dot + its address, like a provider card
+    tab.appendChild(el('div', 'set-group', t('connHead')))
+    tab.appendChild(el('p', 'set-hint', t('connSub')))
     var card = el('div', 'set-provider')
     tab.appendChild(card)
     var head = el('div', 'set-provider-head')
-    head.appendChild(el('span', 'set-provider-name', t('localServer') + (server.kind ? ' · ' + server.kind : '')))
+    head.appendChild(el('span', 'set-provider-name', (KIND_LABELS[server.kind] || t('localServer')) + ' · ' + String(eff.base_url || '').replace(/^https?:[/][/]/, '')))
     var dot = el('span', 'state-dot ' + (server.online ? 'ok' : 'off'))
     head.appendChild(dot)
     head.appendChild(el('span', 'set-item-sub', server.online ? t('online') + (server.ctx ? ' · ' + server.ctx + ' ' + t('tokens') : '') : t('offline')))

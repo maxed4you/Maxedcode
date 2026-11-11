@@ -467,9 +467,9 @@ class HistoryScreen(ModalScreen):
 
 # Palette groups; commands not listed here (new, custom) go to "other"
 PALETTE_GROUPS = (
+    ("model", ("/settings", "/local", "/server", "/model", "/models", "/effort", "/sampling", "/cloud")),
     ("session", ("/new", "/history", "/sessions", "/resume", "/save", "/search", "/rewind", "/undo", "/redo", "/copy", "/quit")),
     ("context", ("/compact", "/context", "/cache", "/btw", "/memory", "/init")),
-    ("model", ("/model", "/models", "/effort", "/sampling", "/cloud")),
     ("modes", ("/act", "/plan", "/auto", "/run")),
     ("tools", ("/tools", "/mcp", "/skill", "/commands", "/agents", "/hooks", "/allow", "/deny", "/permissions", "/editor", "/help")),
 )
@@ -491,6 +491,10 @@ def command_badge(app, name):
             return ("● active", "bold #98c379") if now[name] else ("", "")
         if name in ("/model", "/models"):
             return (str(s.get("model") or ""), "#c8c8c8")
+        if name in ("/server", "/local"):
+            from .. import servers
+            label = servers.LABELS.get(config.SERVER_KIND) or "server"
+            return (f"{label} · {config.CTX_WINDOW // 1024}K", "#c8c8c8")
         if name == "/effort":
             return (str(s.get("effort") or "medium"), "#b69cff" if s.get("effort") == "ultra" else "#d97757")
         if name == "/sampling":
@@ -716,6 +720,70 @@ class CommandPalette(ModalScreen):
 
     def action_close(self):
         self.dismiss(None)
+
+
+class SettingsDeck(CommandPalette):
+    """/settings: every setting in groups with its value now; the hint of the selected one below. Typing
+    filters, Enter opens the setting (its slash command), Esc closes. rows: [(group, command, name, hint)],
+    values: {command: text}."""
+    WIDTH = 96          # the deck is this wide (app.py CSS: SettingsDeck #deck)
+
+    def __init__(self, rows, values):
+        super().__init__()
+        self.rows, self.values = rows, values
+
+    def on_mount(self, event):
+        event.prevent_default()         # Textual would run CommandPalette.on_mount after this one
+        self.query_one("#palette-input", Input).placeholder = "type to filter: model, context, memory…"
+        keys = Text()
+        for key, what in (("↑↓", "move"), ("⏎", "open"), ("esc", "close")):
+            keys.append(f" {key}", style="bold #d4d4d4")
+            keys.append(f" {what} ", style="grey50")
+        self.query_one("#deck").border_subtitle = keys
+        self.fill("")
+        self.query_one("#palette-input", Input).focus()
+
+    def fill(self, query):
+        ol = self.query_one("#palette-list", OptionList)
+        ol.clear_options()
+        q = (query or "").strip().lower()
+        rows = [r for r in self.rows if not q or q in f"{r[1]} {r[2]} {r[3]} {self.values.get(r[1], '')}".lower()]
+        inner = max(40, min(self.WIDTH, self.app.size.width * 95 // 100) - 8)
+        width = max((len(r[2]) for r in self.rows), default=10) + 3
+        group = None
+        for g, cmd, name, hint in rows:
+            if g != group:
+                group = g
+                head = Text.assemble(("◆ ", "#d97757"), (g, "bold #a3a9b3"), (" " + "─" * max(0, inner - len(g) - 3), "#2a2e35"))
+                ol.add_option(Option(head, id=f"#group-{g}", disabled=True))
+            value = str(self.values.get(cmd) or "-")
+            room = max(8, inner - width - len(cmd) - 2)
+            if len(value) > room:
+                value = value[:room - 1] + "…"
+            t = Text()
+            t.append(name, style="bold #e8e8e8")
+            t.append(" " * (width - len(name)))
+            t.append(value, style="#c8c8c8" if value != "-" else "grey42")
+            t.append(" " * max(2, inner - t.cell_len - len(cmd)))
+            t.append(cmd, style="#6b7079")
+            ol.add_option(Option(t, id=cmd))
+        self.query_one("#deck").border_title = Text.assemble((" settings ", "bold #d97757"),
+                                                             (f"{len(rows)}/{len(self.rows)} ", "grey50"))
+        if not rows:
+            self.query_one("#deck-detail", Static).update(Text("nothing matches - keep typing or Esc", style="#d97757"))
+        self.select(0, 1)
+
+    def on_option_list_option_highlighted(self, event):
+        event.prevent_default()         # not CommandPalette's detail of the command
+        name = self.command_at(event.option_index)
+        row = next((r for r in self.rows if r[1] == name), None)
+        if not row:
+            return
+        detail = Text()
+        detail.append(row[2], style="bold #d97757")
+        detail.append(f"  {row[1]}", style="#8f949c")
+        detail.append("\n" + row[3], style="#e0e0e0")
+        self.query_one("#deck-detail", Static).update(detail)
 
 
 class EditorScreen(ModalScreen):

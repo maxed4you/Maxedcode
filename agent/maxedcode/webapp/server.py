@@ -544,6 +544,64 @@ def module(name, *args, body=None, cwd=None, timeout=60):
     return {"error": (r.stderr.strip().splitlines() or [f"exit {r.returncode}"])[-1]}
 
 
+# Settings -> Models: one start or stop of a model server at a time (maxedcode.launch), owned by this server like
+# a turn: loading a big model takes minutes, so the page polls /api/launch?job=1 instead of holding a request.
+LAUNCH = {"job": None}
+LAUNCH_LOCK = threading.Lock()
+
+
+def launch_job():
+    """What the page shows of the start / stop in progress (or the last one): kind, its lines, the result."""
+    j = LAUNCH["job"]
+    if not j:
+        return None
+    return {"id": j["id"], "do": j["do"], "kind": j["kind"], "model": j.get("model"), "ctx": j.get("ctx"),
+            "lines": j["lines"][-1:], "pct": j.get("pct"), "result": j["result"],
+            "secs": int((j.get("ended") or time.monotonic()) - j["started"])}
+
+
+def launch_begin(data):
+    """{"do": "start" | "stop" | "cancel", "kind", "model", "ctx", "script"} -> the job."""
+    what = data.get("do")
+    with LAUNCH_LOCK:
+        old = LAUNCH["job"]
+        if what == "cancel" or (old and old["result"] is None and what in ("start", "stop")):
+            if old and old["result"] is None:
+                kill_tree(old["proc"])
+                old["result"] = {"ok": False, "error": "cancelled"}
+                old["ended"] = time.monotonic()
+            if what == "cancel":
+                return launch_job()
+        if what not in ("start", "stop"):
+            return {"error": "do: start, stop or cancel"}
+        body = {k: data.get(k) for k in ("kind", "model", "ctx", "script")}
+        proc = subprocess.Popen([sys.executable, "-m", "maxedcode.launch", what], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                errors="replace", cwd=str(Path.home()), env=agent_env(), **POPEN_GROUP,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        proc.stdin.write(json.dumps(body))
+        proc.stdin.close()
+        job = {"id": secrets.token_hex(4), "do": what, "proc": proc, "lines": [], "result": None,
+               "started": time.monotonic(), **body}
+        LAUNCH["job"] = job
+
+    def pump():
+        for line in proc.stdout:
+            with suppress(ValueError):
+                obj = json.loads(line)
+                if obj.get("done"):
+                    job["result"] = obj
+                elif obj.get("text"):
+                    job["lines"].append(obj["text"])
+                    job["pct"] = obj.get("pct")
+        proc.wait()
+        if job["result"] is None:
+            job["result"] = {"ok": False, "error": f"exit {proc.returncode}"}
+        job["ended"] = time.monotonic()
+    threading.Thread(target=pump, daemon=True).start()
+    return launch_job()
+
+
 def settings(body=None):
     """Settings -> maxedcode (maxedcode.appsettings)."""
     return module("maxedcode.appsettings", "set" if body is not None else "get", body=body)
@@ -914,6 +972,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {**update.status(), "notice": update.take_notice()})
         if url.path == "/api/servers":       # model servers running / installed on this PC (first-start picker)
             return self.send(200, module("maxedcode.servers", "scan"))
+        if url.path == "/api/launch":        # Settings -> Models: servers, their models; ?job=1 only the job
+            if query.get("job"):
+                return self.send(200, {"job": launch_job()})
+            return self.send(200, {**module("maxedcode.launch", "get", timeout=90), "job": launch_job()})
         if url.path == "/api/cli":
             return self.send(200, cli(query.get("cwd")))
         if url.path == "/api/browser":
@@ -997,6 +1059,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/servers":          # start an installed server: {"start": kind} -> {"base": url | null}
             # servers.start waits up to 180 s for a model to load
             return self.send(200, module("maxedcode.servers", "start", str(data.get("start") or ""), timeout=200))
+        if path == "/api/launch":           # start / stop / cancel a model server: {"do", "kind", "model", "ctx"}
+            return self.send(200, {"job": launch_begin(data)})
         if path == "/api/cli":
             return self.send(200, cli(data.get("cwd"), data))
         if path == "/api/expand":

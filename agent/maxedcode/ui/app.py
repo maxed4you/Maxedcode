@@ -394,6 +394,7 @@ class AgentApp(App):
     #cloud-error { height: auto; margin-top: 1; }
     #editor-count { height: 1; text-align: right; }
     CommandPalette { align: center top; background: #000000 65%; }
+    SettingsDeck #deck { width: 96; }
     #deck { width: 80; max-width: 95%; height: auto; max-height: 90%; margin-top: 3; padding: 0 1; background: #0e1013;
             border: round #3a3f47; border-title-align: left; border-subtitle-align: right; }
     #deck-search { height: 4; padding: 1 0 1 1; border-bottom: dashed #2a2e35; }
@@ -1951,6 +1952,10 @@ class AgentApp(App):
                 await self.note("Usage: /cloud setup | add | list | default <id> [model] | models <id> | test [id] | remove <id> | note <model> <text> | status | disable | tokens <n> | subagents on|off | autosend on|off", "yellow")
         elif cmd == "/server":
             await self.server_cmd(arg.strip())
+        elif cmd == "/local":
+            await self.local_cmd(arg)
+        elif cmd in ("/settings", "/config"):
+            await self.settings_cmd(arg)
         elif cmd in ("/model", "/models"):
             if cmd == "/models" and not arg.strip():
                 profiles = SETTINGS.get("model_settings") or SETTINGS.get("models") or {}
@@ -2647,12 +2652,149 @@ class AgentApp(App):
             scr.text = f"Error: {type(e).__name__}: {e}"
             scr.show()
 
+    async def local_cmd(self, arg):
+        """/local: run a model on this PC in a few picks - the program (Strata, LM Studio, Ollama, llama.cpp), the
+        model, the context - then the agent uses it. /local stop stops the one that runs. maxedcode/launch.py does
+        the work, the same as Settings -> Models -> Run a model in the window."""
+        from .. import launch
+        await self.note("looking for model servers and models on this computer…", "grey50")
+        cat = await asyncio.to_thread(launch.catalog)
+        progs = cat["servers"]
+        if arg.strip().lower() in ("stop", "off"):
+            on = [x for x in progs if x["running"]]
+            if not on:
+                return await self.note("no model server runs on this computer", "yellow")
+            x = on[0]
+            if len(on) > 1:
+                labels = [f"{y['label']} · {(y['loaded'] or {}).get('model') or 'running'}" for y in on]
+                choice = await self.push_screen(Pick("Stop which server?", labels, False), wait_for_dismiss=True)
+                if not choice:
+                    return
+                x = on[labels.index(choice)]
+            await self.note(f"stopping {x['label']}…", "grey50")
+            r = await asyncio.to_thread(launch.stop, x["kind"])
+            return await self.note(f"{x['label']}: {r['text']}", "green" if r["ok"] else "yellow")
+
+        def ctx_k(n):
+            return f"{n // 1024}K" if n < 1048576 else f"{n // 1048576}M"
+
+        def state(x):
+            if x["running"]:
+                lo = x.get("loaded") or {}
+                return "running" + (f": {lo['model']}" if lo.get("model") else ", no model loaded") + \
+                    (f" · {ctx_k(lo['ctx'])}" if lo.get("ctx") else "")
+            if not x["installed"]:
+                return f"not installed - {x['about']}"
+            return f"installed, not running · {len(x['models'])} models"
+        labels = [f"{x['label']} · {state(x)}" for x in progs]
+        choice = await self.push_screen(Pick("Run a model on this computer: which program?", labels, False,
+                                             body="maxedcode starts the server, loads the model with the context you "
+                                                  "pick and switches the agent to it. /local stop stops it."),
+                                        wait_for_dismiss=True)
+        if not choice:
+            return
+        x = progs[labels.index(choice)]
+        if not x["installed"]:
+            return await self.note(f"{x['label']} is not installed: download it from {x['download']}, then /local again",
+                                   "yellow")
+        if not x["can_start"]:
+            return await self.note(f"{x['label']}: its start command is not found - {x.get('how') or 'start it yourself'}",
+                                   "yellow")
+        models, script = x["models"], None
+        opts = []
+        for m in models:
+            facts = [m.get("params"), m.get("quant"), f"{m['size'] / 1e9:.1f} GB" if m.get("size") else "",
+                     f"up to {ctx_k(m['max_ctx'])}" if m.get("max_ctx") else "", "loaded" if m.get("loaded") else ""]
+            opts.append(" · ".join([m["name"], *[f for f in facts if f]]))
+        scripts = [f"own script: {sc['name']}" for sc in x.get("scripts") or []]
+        if not opts and not scripts:
+            hint = f" (in a terminal: {x['hint']})" if x.get("hint") else ""
+            return await self.note(f"{x['label']} has no models yet{hint}", "yellow")
+        choice = await self.push_screen(Pick(f"{x['label']}: which model?", opts + scripts, False), wait_for_dismiss=True)
+        if not choice:
+            return
+        model, ctx = None, None
+        if choice in scripts:
+            script = x["scripts"][scripts.index(choice)]["path"]
+        else:
+            model = models[opts.index(choice)]
+            best = model["pick_ctx"]
+            sizes = [best] + [c for c in model["ctxs"] if c != best]
+            names = [f"{ctx_k(c)}  ({c:,} tokens)" + ("  - last used / suggested" if c == best else "") for c in sizes]
+            pick = await self.push_screen(Pick(f"{model['name']}: context", names, True,
+                                               body="How much text the model holds at once. More: longer work "
+                                                    "without compaction, but more graphics memory. 32K-64K is "
+                                                    "comfortable; the agent needs 16K at least. Custom: a number "
+                                                    "of tokens (64k works too)."), wait_for_dismiss=True)
+            if not pick:
+                return
+            if pick in names:
+                ctx = sizes[names.index(pick)]
+            else:
+                digits = int(re.sub(r"\D", "", pick) or 0)
+                ctx = digits * 1024 if 0 < digits < 1024 else digits or best
+        lines = []
+
+        def say(text, pct=None):
+            lines.append((text, pct))
+        task = asyncio.ensure_future(asyncio.to_thread(launch.start, x["kind"], model and model["id"], ctx, script, say))
+        what = (model or {}).get("name") or Path(script).name
+        await self.note(f"starting {x['label']}: {what}" + (f" · context {ctx_k(ctx)}" if ctx else "") +
+                        " (it keeps loading in the background; /local stop stops it)", "grey50")
+        shown, last, started = 0.0, "", time.monotonic()
+        while not task.done():
+            await asyncio.sleep(1)
+            if lines and time.monotonic() - shown >= 10 and lines[-1][0] != last:
+                text, pct = lines[-1]
+                last, shown = text, time.monotonic()
+                await self.note(f"  {int(time.monotonic() - started)} s · {text}" + (f" · {pct:.0f}%" if pct else ""),
+                                "grey50")
+        done = task.result()
+        if not done.get("ok"):
+            return await self.note(f"{x['label']} did not start: {done.get('error')}", "red")
+        await self.use_server(done["base"], done["kind"],
+                              done.get("model") if done["kind"] in ("lmstudio", "ollama") else None)
+
+    async def settings_cmd(self, arg):
+        """/settings: every setting in one deck with its value now and what it is for; Enter opens it (its slash
+        command). The window's Settings edit the same files."""
+        from .. import servers
+        from .screens import SettingsDeck, command_badge
+        rows = [("model", "/local", "Run a model on this PC", "Pick a program (Strata, LM Studio, Ollama, llama.cpp), a model and a context: maxedcode starts it and switches to it."),
+                ("model", "/server", "Model server", "Where the agent's model runs: this PC, another PC on the network (an IP is enough) or a cloud API with a key."),
+                ("model", "/models", "Model", "The model the server serves; /model <name> switches to another one."),
+                ("model", "/effort", "Reasoning effort", "Faster or smarter answers: off, low, medium, high, ultra."),
+                ("model", "/sampling", "Sampling", "Temperature, top_p and top_k of the model; /sampling reset brings the defaults back."),
+                ("model", "/cloud", "Cloud help", "A cloud model drafts the hard parts; only the task text is sent, never the project."),
+                ("modes", "/plan", "Plan mode", "Reads and searches, never edits. Shift+Tab cycles the modes."),
+                ("modes", "/act", "Manual mode", "Asks before every edit and command."),
+                ("modes", "/auto", "Auto mode", "Runs tools without asking."),
+                ("rules", "/permissions", "Permissions", "allow / deny / ask rules for tools (/allow, /deny add one)."),
+                ("rules", "/hooks", "Hooks", "Commands run on agent events, from settings.json."),
+                ("tools", "/mcp", "MCP servers", "Extra tools from MCP servers: /mcp add name command."),
+                ("tools", "/skill", "Skills", "Packaged instructions the agent loads when it needs them."),
+                ("tools", "/tools", "Tools", "The tool catalog in the prompt."),
+                ("memory", "/memory", "Memory", "What the agent remembers between sessions; /memory <text> saves a note."),
+                ("memory", "/history", "Sessions", "Saved sessions of this folder: open, delete.")]
+        label = servers.LABELS.get(config.SERVER_KIND) or "server"
+        values = {"/server": f"{label} · {config.BASE_URL}", "/local": f"{label} · context {CTX_WINDOW:,}"}
+        for _, cmd, _, _ in rows:
+            if cmd not in values:
+                with suppress(Exception):
+                    values[cmd] = command_badge(self, cmd)[0]
+        values["/models"] = values.get("/models") or str(S.get("model") or "")
+        mode = self.cur_mode()
+        for cmd, m in (("/plan", "plan"), ("/act", "manual"), ("/auto", "auto")):
+            values[cmd] = "● on" if mode == m else "off"
+        picked = await self.push_screen(SettingsDeck(rows, values), wait_for_dismiss=True)
+        if picked:
+            await self._command(picked[1] if isinstance(picked, tuple) else picked)
+
     async def server_cmd(self, arg):
         """/server: the model server of the main agent. No argument: the servers found on this PC (running ones,
         installed ones that are started from here) or a typed address; /server <ip|url> switches at once.
         Saved where the window and the next start read it (config.json, or settings.json when pinned there)."""
         from .. import appsettings, servers
-        global CTX_WINDOW, CTX_SRC
         pick, kind, model = arg, "", None
         if not pick:
             await self.note("looking for model servers on this computer…", "grey50")
@@ -2709,6 +2851,12 @@ class AgentApp(App):
                 pick = choice.strip()
         if not kind:        # a typed address in any form: "192.168.0.10", "pc:1234" -> the URL that answers
             pick = await asyncio.to_thread(servers.find_base, pick, config.API_KEY) or pick
+        await self.use_server(pick, kind, model)
+
+    async def use_server(self, pick, kind="", model=None):
+        """Switch the agent to this server now and save it (/server, /local)."""
+        from .. import appsettings, servers
+        global CTX_WINDOW, CTX_SRC
         info = await asyncio.to_thread(config.use_server, pick, kind, model)
         if not info.get("online"):
             await self.note(f"{config.BASE_URL} does not answer yet; saved anyway - start the server", "yellow")

@@ -541,8 +541,8 @@ class Prompt(TextArea):
     class Submitted(Message):
         pass
 
-    PLACEHOLDER = ('Try "refactor <filepath>" · Shift+Enter — new line, / — commands, '
-                   'while the model works a message is sent to the queue')
+    PLACEHOLDER = ('Try "refactor <filepath>" · / — commands, /settings — all settings, /local — run a model · '
+                   'Shift+Enter — new line')
 
     def __init__(self):
         # no cursor line highlight: it drew an extra bar across the whole input

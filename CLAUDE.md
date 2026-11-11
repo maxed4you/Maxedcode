@@ -173,6 +173,13 @@ agent/
    │                     the installer ("Cloud API" line), /server, the app window (Settings → maxedcode: provider + API key).
    │                     find_base/candidates — an address in any form (IP, ip:port, URL) → the URL that responds;
    │                     auth_headers — the Anthropic key for /models goes in x-api-key
+   ├─ launch.py          run a model on this PC in one click (window Settings -> Models -> Run a model, the model menu
+   │                     under the input; CLI /local, /local stop): Strata (`strata launch --model --context --no-tui`,
+   │                     or the user's own start script in its own console), LM Studio (`lms load --context-length
+   │                     --parallel 1`), Ollama (OLLAMA_CONTEXT_LENGTH + restart + keep_alive), llama.cpp (`llama-server
+   │                     -m <gguf> -c`); a started server becomes the agent's (appsettings). The window runs it as a job:
+   │                     POST /api/launch {do: start|stop|cancel}, GET /api/launch?job=1. Never kills an unknown program
+   │                     on a busy port. ~/.maxedcode/launch.json keeps the last model/context per server, own scripts
    ├─ memory.py          memory: MEMORY.md indexes, topic files, @import, path-scoped rules, notes,
    │                     README.md of folders (docs injected on first touch of a file)
    ├─ hooks.py           hooks from settings.json (7 events, stdin/stdout JSON, exit code 2 = block)
