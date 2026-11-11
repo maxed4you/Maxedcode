@@ -3471,7 +3471,7 @@
     tab.appendChild(row(t('sharedFolder'), t('sharedFolderSub'), shared, true))
     tab.appendChild(row(t('permission'), t('permissionSub'), pick([['manual', 'Manual'], ['accept-edits', 'Accept edits'], ['auto', 'Auto'], ['plan', 'Plan']], pref('mode', 'plan'), function (v) { setPref('mode', v) })))
     tab.appendChild(row(t('language'), '', pick([['ru', 'Русский'], ['en', 'English']], lang, function (v) {
-      lang = v; setPref('lang', v); shareLang(); applyLook(); renderGeneral(); renderChat(); renderAgent(); renderCli(); renderCloud(); renderBrowser(); renderSide(); renderSeats(); renderStatus()
+      lang = v; setPref('lang', v); shareLang(); applyLook(); renderGeneral(); renderChat(); renderModelTabs(); renderCli(); renderCloud(); renderBrowser(); renderSide(); renderSeats(); renderStatus()
       relabel()
     })))
     var themes = el('div', 'themes'), cur = pref('theme', 'dark')
@@ -3620,13 +3620,41 @@
     deepseek: 'DeepSeek', groq: 'Groq', mistral: 'Mistral', xai: 'xAI', together: 'Together AI', cerebras: 'Cerebras' }
   var launchData = null, launchKind = '', launchPick = {}, launchTimer = null
   function ctxLabel(n) { return n >= 1048576 ? Math.round(n / 1048576) + 'M' : Math.round(n / 1024) + 'K' }
+  // Strata's sizes: "iq3_xxs" -> "IQ3_XXS", "coder-iq1_m" -> "Coder · IQ1_M", "ud-q4_k_xl" -> "UD-Q4_K_XL"
+  function strataName(id) {
+    var parts = String(id || '').split('-'), size = parts.pop().toUpperCase()
+    if (parts.length && /^ud$/i.test(parts[parts.length - 1])) { parts.pop(); size = 'UD-' + size }
+    var fam = parts.join('-')
+    return fam ? fam.charAt(0).toUpperCase() + fam.slice(1) + ' · ' + size : size
+  }
   function sizeLabel(b) { return b ? (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB') : '' }
   function loadLaunch() {
     return api('/api/launch').then(function (d) {
       launchData = d
       if (d && d.job && d.job.result === null) followJob()
+      autoFollow()
       return d
     }, function () { launchData = { servers: [], error: 'no answer' } })
+  }
+  // The agent's server on this PC does not answer and exactly one other one runs here (started from its own
+  // window, a script, the tray): the agent follows it, once per address, and says so.
+  var followedFrom = ''
+  function autoFollow() {
+    var d = state.settings, job = launchData && launchData.job
+    if (!d || !d.server || d.server.online || !launchData || (job && job.result === null)) return
+    var base = String((d.effective || {}).base_url || '')
+    if (!/^https?:[/][/](127\.0\.0\.1|localhost|\[::1\])[:/]/i.test(base) || followedFrom === base) return
+    var on = (launchData.servers || []).filter(function (x) { return x.running })
+    if (on.length !== 1) return
+    followedFrom = base
+    var x = on[0], jit = x.kind === 'lmstudio' || x.kind === 'ollama'
+    if (jit && !(x.loaded && x.loaded.model)) return
+    api('/api/settings', { base_url: x.base, server: x.kind, model: jit ? x.loaded.model : null }).then(function (r) {
+      if (r.error) return
+      gotSettings(r)
+      if (!$('modal').hidden) renderModelTabs()
+      toast(t('followed').replace('{new}', x.label).replace('{old}', KIND_LABELS[d.server.kind] || base), 6000)
+    })
   }
   function launchServer(kind) { return ((launchData && launchData.servers) || []).filter(function (s) { return s.kind === kind })[0] }
   // which program is shown: the chosen one, else the one the agent uses, a running one, the last started, one installed
@@ -3636,15 +3664,6 @@
     var s = launchServer(launchKind) || by(function (x) { return x.kind === cur && x.installed }) || by(function (x) { return x.running }) ||
       launchServer(launchData && launchData.last) || by(function (x) { return x.installed }) || list[0]
     return s
-  }
-  function pickOf(s) {
-    var p = launchPick[s.kind] || {}
-    var models = s.models || []
-    var m = models.filter(function (x) { return x.id === p.model })[0] || models.filter(function (x) { return x.loaded })[0] ||
-      models.filter(function (x) { return x.id === s.last_model })[0] || models[0] || null
-    var ctx = p.ctx || (m && m.loaded && s.loaded && s.loaded.ctx) || (m && m.pick_ctx) || 32768
-    var script = p.script !== undefined ? p.script : s.script || ''
-    return { model: m, ctx: ctx, script: script }
   }
   function isCurrent(s) {
     var b = ((state.settings && state.settings.effective) || {}).base_url || ''
@@ -3663,7 +3682,8 @@
             if (j.result.ok && j.do === 'start') toast(t('runDone') + ': ' + (j.result.model || j.model || '') + (j.result.ctx ? ' · ' + ctxLabel(j.result.ctx) : ''), 4000)
             else if (j.result.ok) toast(t('runStopped'), 2500)
           }
-          return Promise.all([loadLaunch(), api('/api/settings').then(gotSettings)]).then(redrawLaunch)
+          foundServers = null
+          return Promise.all([loadLaunch(), api('/api/settings').then(gotSettings)]).then(function () { if (!$('modal').hidden) renderModelTabs() })
         }
         drawJob()
       }, function () {})
@@ -3682,7 +3702,8 @@
   function drawJob() {
     if (!jobBox || !jobBox.isConnected) return
     var j = launchData && launchData.job
-    if (j && j.result !== null && j.kind !== launchKind) j = null     // a finished start of another program
+    // a finished start of another program, or one that ended minutes ago: not shown
+    if (j && j.result !== null && (j.kind !== launchKind || (j.age || 0) > 180)) j = null
     jobBox.innerHTML = ''
     jobBox.hidden = !j
     if (!j) return
@@ -3714,6 +3735,93 @@
     drawLaunch()
     if (!launchData) loadLaunch().then(redrawLaunch)
   }
+  // the way to start (launch.ways): the one chosen here, else the last one started, else what the person set up
+  // themselves (an own way, then a script found in the program's folder, then its presets), else the builtin start
+  function pickOf(s) {
+    var p = launchPick[s.kind] || {}, ways = s.ways || []
+    var has = function (id) { return ways.some(function (w) { return w.id === id }) }
+    var by = function (src) { return (ways.filter(function (w) { return w.source === src })[0] || {}).id }
+    var way = has(p.way) ? p.way : has(s.last_way) ? s.last_way : by('own') || by('found') || by('program') || by('builtin') || ''
+    var models = s.models || []
+    var m = models.filter(function (x) { return x.id === p.model })[0] || models.filter(function (x) { return x.loaded })[0] ||
+      models.filter(function (x) { return x.id === s.last_model })[0] || models[0] || null
+    var ctx = p.ctx || (m && m.loaded && s.loaded && s.loaded.ctx) || (m && m.pick_ctx) || 32768
+    var opts = p.opts || Object.assign({}, s.opts || {})
+    return { way: way, wayObj: ways.filter(function (w) { return w.id === way })[0] || null, model: m, ctx: ctx, opts: opts }
+  }
+  var wayForm = null             // the "own way" form being filled: {kind, id?, name, command, base}
+  function wayFormBox(body, s) {
+    var f = wayForm, box = body.appendChild(el('div', 'way-form'))
+    box.appendChild(el('div', 'way-form-title', f.id ? t('wayEdit') : t('wayNew')))
+    box.appendChild(el('p', 'set-hint', s.kind === 'other' ? t('wayOtherSub') : t('wayNewSub')))
+    var name = inputEl(t('wayName'), f.name), cmd = inputEl(t('wayCmdPh'), f.command), base = inputEl(s.base ? s.base.replace(/^https?:[/][/]/, '') : '127.0.0.1:5001', f.base)
+    name.oninput = function () { f.name = name.value }
+    cmd.oninput = function () { f.command = cmd.value }
+    base.oninput = function () { f.base = base.value }
+    var r1 = box.appendChild(el('div', 'way-field'))
+    r1.appendChild(el('label', '', t('wayCmd')))
+    var cr = r1.appendChild(el('div', 'pick-row'))
+    cr.appendChild(cmd)
+    cr.appendChild(button(t('runPickFile'), function () {
+      api('/api/pick-file', { start: f.command ? parentOf(f.command.replace(/"/g, '')) : '' }).then(function (r) {
+        var p = r && r.paths && r.paths[0]
+        if (!p) return
+        f.command = /\s/.test(p) ? '"' + p + '"' : p
+        if (!f.name) f.name = p.split(/[\\/]/).pop().replace(/\.[^.]+$/, '')
+        drawLaunch()
+      })
+    }))
+    var r2 = box.appendChild(el('div', 'way-field'))
+    r2.appendChild(el('label', '', t('wayNameLbl')))
+    r2.appendChild(name)
+    var r3 = box.appendChild(el('div', 'way-field'))
+    r3.appendChild(el('label', '', t('wayBase')))
+    r3.appendChild(base)
+    r3.appendChild(el('div', 'set-hint', s.kind === 'other' ? t('wayBaseOther') : t('wayBaseSub')))
+    var acts = box.appendChild(el('div', 'run-actions'))
+    var save = acts.appendChild(smallBtn(t('save'), function () {
+      if (!String(f.command || '').trim()) return cmd.focus()
+      if (s.kind === 'other' && !String(f.base || '').trim()) return base.focus()
+      save.disabled = true
+      api('/api/launch', { do: 'way-save', kind: s.kind, id: f.id || null, name: f.name || '', command: f.command, base: f.base || '' }).then(function (r) {
+        if (r && r.servers) launchData = Object.assign(r, { job: launchData && launchData.job })
+        var mine = (launchServer(s.kind) || {}).ways || []
+        var added = mine.filter(function (w) { return w.source === 'own' && w.command === String(f.command).trim() })[0]
+        wayForm = null
+        if (added) { launchPick[s.kind] = Object.assign(launchPick[s.kind] || {}, { way: added.id }) }
+        drawLaunch()
+      })
+    }))
+    acts.appendChild(smallBtn(t('cancel'), function () { wayForm = null; drawLaunch() }, 'link'))
+    setTimeout(function () { (f.command ? name : cmd).focus() }, 0)
+  }
+  // Settings -> Models -> More settings: this program's own switches (launch.OPTIONS), kept per program
+  function optionsBox(body, s, p) {
+    var list = s.options || []
+    if (!list.length) return
+    var open = !!(launchPick[s.kind] || {}).more
+    var set = Object.keys(p.opts || {}).filter(function (k) { return p.opts[k] }).length
+    var head = body.appendChild(el('button', 'run-more' + (open ? ' open' : '')))
+    head.innerHTML = icon('chevronRight', 's14')
+    head.appendChild(el('span', '', t('runMore') + ' ' + s.label))
+    if (set) head.appendChild(el('span', 'tag', set + ' ' + t('runChanged')))
+    head.onclick = function () { launchPick[s.kind] = Object.assign(launchPick[s.kind] || {}, { more: !open, opts: p.opts }); drawLaunch() }
+    if (!open) return
+    var rows = body.appendChild(el('div', 'set-rows run-opts'))
+    var setOpt = function (k, v) { p.opts[k] = v; launchPick[s.kind] = Object.assign(launchPick[s.kind] || {}, { opts: p.opts }) }
+    list.forEach(function (o) {
+      var ctl
+      if (o.type === 'text') {
+        ctl = inputEl('', p.opts[o.key] || '')
+        ctl.oninput = function () { setOpt(o.key, ctl.value) }
+      } else {
+        var cur = p.opts[o.key] !== undefined && p.opts[o.key] !== null ? String(p.opts[o.key]) : String(o.default || '')
+        ctl = pick(o.choices.map(function (c) { return [c[0], tl(c[1])] }), cur, function (v) { setOpt(o.key, v) })
+      }
+      rows.appendChild(row(tl(o.label), o.hint ? tl(o.hint) : '', ctl))
+    })
+    rows.appendChild(el('div', 'run-actions')).appendChild(smallBtn(t('runReset'), function () { p.opts = {}; launchPick[s.kind] = Object.assign(launchPick[s.kind] || {}, { opts: {} }); drawLaunch() }, 'link'))
+  }
   function drawLaunch() {
     var box = launchBox
     box.innerHTML = ''
@@ -3722,128 +3830,192 @@
     var s = launchDefault()
     if (!s) { box.appendChild(el('div', 'error-box', launchData.error || t('setupNone'))); return }
     launchKind = s.kind
+    var label = function (x) { return x.kind === 'other' ? t('otherKind') : x.label }
     var job = launchData.job, busy = !!(job && job.result === null)
     // the programs as segments: a dot says running (green), installed (grey), missing (hollow)
     var seg = box.appendChild(el('div', 'run-seg'))
     list.forEach(function (x) {
       var b = seg.appendChild(el('button', x.kind === s.kind ? 'on' : ''))
-      b.appendChild(el('span', 'state-dot ' + (x.running ? 'ok' : x.installed ? 'off' : 'none')))
-      b.appendChild(el('span', '', x.label))
-      b.title = x.running ? t('runRunning') : x.installed ? t('runOff') : t('runNotInstalled')
-      b.onclick = function () { launchKind = x.kind; drawLaunch() }
+      if (x.kind !== 'other' || x.running) b.appendChild(el('span', 'state-dot ' + (x.running ? 'ok' : x.installed ? 'off' : 'none')))
+      b.appendChild(el('span', '', label(x)))
+      b.title = x.kind === 'other' ? t('about_other') : x.running ? t('runRunning') : x.installed ? t('runOff') : t('runNotInstalled')
+      b.onclick = function () { launchKind = x.kind; wayForm = null; drawLaunch() }
     })
     var body = box.appendChild(el('div', 'run-body'))
     // the state of this program, its stop button
     var st = body.appendChild(el('div', 'run-state'))
     st.appendChild(el('span', 'state-dot ' + (s.running ? 'ok' : s.installed ? 'off' : 'none')))
-    var line = s.running ? t('runRunning') + (s.loaded && s.loaded.model ? ' · ' + s.loaded.model + (s.loaded.ctx ? ' · ' + ctxLabel(s.loaded.ctx) : '') : ' · ' + t('runNoLoaded'))
-      : s.installed ? t('runOff') : t('runNotInstalled')
+    var lo = s.loaded || {}
+    var line = s.running ? t('runRunning') + (lo.label ? ' · ' + lo.label : '') + (lo.model ? ' · ' + shortModel(lo.model) + (lo.ctx ? ' · ' + ctxLabel(lo.ctx) : '') : s.kind === 'other' ? '' : ' · ' + t('runNoLoaded'))
+      : s.kind === 'other' ? t('about_other') : s.installed ? t('runOff') : t('runNotInstalled')
     st.appendChild(el('span', 'run-state-text', line))
     if (s.running && isCurrent(s)) st.appendChild(el('span', 'tag', t('runCurrent')))
     st.appendChild(el('span', 'grow'))
     if (s.running && !isCurrent(s)) st.appendChild(smallBtn(t('runUseIt'), function () {
-      api('/api/settings', { base_url: s.base, server: s.kind, model: s.kind === 'lmstudio' || s.kind === 'ollama' ? (s.loaded && s.loaded.model) || null : null })
-        .then(function (d) { if (!d.error) { gotSettings(d); renderAgent() } else toast(d.error, 4000) })
+      api('/api/settings', { base_url: s.base, server: s.kind === 'other' ? null : s.kind, model: s.kind === 'lmstudio' || s.kind === 'ollama' ? lo.model || null : null })
+        .then(function (d) { if (!d.error) { gotSettings(d); renderModelTabs() } else toast(d.error, 4000) })
     }, 'outline'))
     if (s.running) {
-      var stopB = st.appendChild(smallBtn(t('runStop'), function () { launchAct({ do: 'stop', kind: s.kind }) }, 'danger'))
+      var stopB = st.appendChild(smallBtn(t('runStop'), function () { launchAct({ do: 'stop', kind: s.kind, base: s.base }) }, 'danger'))
       stopB.disabled = busy
     }
-    if (!s.installed) {
-      body.appendChild(el('p', 'run-about', s.about))
+    var p = pickOf(s), ways = s.ways || [], models = s.models || []
+    var save = function (k, v) { launchPick[s.kind] = Object.assign({}, launchPick[s.kind] || {}, { way: p.way, opts: p.opts }); launchPick[s.kind][k] = v; if (k === 'model') delete launchPick[s.kind].ctx }
+    if (!s.installed && !ways.length) {
+      body.appendChild(el('p', 'run-about', t('about_' + s.kind)))
       var acts = body.appendChild(el('div', 'run-actions'))
       acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
       acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
+      acts.appendChild(smallBtn(t('wayAddShort'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link'))
       acts.appendChild(el('span', 'muted small', t('runNotInstalledSub')))
+      if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
       return
     }
-    var p = pickOf(s), models = s.models || []
-    var save = function (k, v) { launchPick[s.kind] = Object.assign(pickOf(s), launchPick[s.kind] || {}); launchPick[s.kind][k] = v; if (k === 'model') delete launchPick[s.kind].ctx }
-    launchPick[s.kind] = { model: p.model && p.model.id, ctx: p.ctx, script: p.script }
-    var scripted = s.kind === 'strata' && !!p.script
-    // models: one radio row each, the facts that help choosing (size, quantization, the most context it takes)
-    body.appendChild(el('div', 'run-label', t('runModel')))
-    if (!models.length) {
-      var none = body.appendChild(el('div', 'run-none', t('runNoModels')))
-      if (s.kind === 'ollama') {
-        none.appendChild(el('div', 'muted small', t('runOllamaPull')))
-        var cmd = none.appendChild(el('div', 'pick-row'))
-        cmd.appendChild(el('code', 'path-val', s.hint || 'ollama pull qwen3:8b'))
-        cmd.appendChild(button(t('brCopy'), function () { copy(s.hint || 'ollama pull qwen3:8b') }))
-      }
-    }
-    var ml = models.length ? body.appendChild(el('div', 'run-models' + (scripted ? ' dim' : ''))) : null
-    models.forEach(function (m) {
-      var r = ml.appendChild(el('button', 'run-model' + (p.model && p.model.id === m.id ? ' on' : '')))
-      r.appendChild(el('span', 'run-radio'))
-      var info = r.appendChild(el('span', 'run-model-info'))
-      info.appendChild(el('span', 'run-model-name', m.name))
-      var facts = [m.params, m.quant, sizeLabel(m.size), m.max_ctx ? t('runUpTo') + ' ' + ctxLabel(m.max_ctx) : '',
-        !m.max_ctx && m.ctx ? t('runSetUp') + ' ' + ctxLabel(m.ctx) : '', s.kind === 'strata' ? m.id : ''].filter(Boolean)
-      if (facts.length) info.appendChild(el('span', 'run-model-sub', facts.join(' · ')))
-      if (m.path || m.id !== m.name) r.title = m.path ? m.id : m.id
-      if (m.vision) r.appendChild(el('span', 'tag', t('runVision')))
-      if (m.loaded) r.appendChild(el('span', 'tag ok', t('runLoaded')))
-      r.onclick = function () { save('model', m.id); drawLaunch() }
-    })
-    // context: the sizes this model takes
-    if (p.model) {
-      var cr = body.appendChild(el('div', 'run-ctx' + (scripted ? ' dim' : '')))
-      var cl = cr.appendChild(el('div', 'run-label', t('runCtx')))
-      cl.title = t('runCtxSub')
-      var chips = cr.appendChild(el('div', 'run-chips'))
-      ;(p.model.ctxs || [16384, 32768, 65536]).forEach(function (c) {
-        var b = chips.appendChild(el('button', c === p.ctx ? 'on' : '', ctxLabel(c)))
-        b.title = c.toLocaleString() + ' ' + t('tokens')
-        b.onclick = function () { save('ctx', c); drawLaunch() }
+    // the ways to start: one card each; the builtin start opens its model, context and settings below
+    if (ways.length > 1 || (ways.length && ways[0].type !== 'builtin') || s.kind === 'other') {
+      body.appendChild(el('div', 'run-label', t('runHow')))
+      var wl = body.appendChild(el('div', 'run-models'))
+      ways.forEach(function (w) {
+        var r = wl.appendChild(el('button', 'run-model' + (w.id === p.way ? ' on' : '')))
+        r.appendChild(el('span', 'run-radio'))
+        var info = r.appendChild(el('span', 'run-model-info'))
+        var title = w.type === 'builtin' ? t('wayBuiltin') : w.name
+        var sub = w.type === 'builtin' ? t('wayBuiltinSub') : w.type === 'preset' ? t('wayPresetSub') : w.command + (w.base && w.source === 'own' ? ' → ' + w.base.replace(/^https?:[/][/]/, '') : '')
+        info.appendChild(el('span', 'run-model-name', title))
+        info.appendChild(el('span', 'run-model-sub', sub))
+        r.title = sub
+        var tag = { found: t('wayFound'), own: t('wayOwn'), program: t('wayPreset') }[w.source]
+        if (tag) r.appendChild(el('span', 'tag', tag))
+        if (w.source === 'own') {
+          var ed = r.appendChild(iconBtn('pencil', t('wayEdit'), function (e) { e.stopPropagation(); wayForm = { kind: s.kind, id: w.id, name: w.name, command: w.command, base: w.base }; drawLaunch() }))
+          ed.classList.add('run-icon')
+          var rm = r.appendChild(iconBtn('x', t('remove'), function (e) {
+            e.stopPropagation()
+            api('/api/launch', { do: 'way-remove', id: w.id }).then(function (x) { if (x && x.servers) launchData = Object.assign(x, { job: launchData && launchData.job }); drawLaunch() })
+          }))
+          rm.classList.add('run-icon')
+        }
+        r.onclick = function () { save('way', w.id); wayForm = null; drawLaunch() }
       })
-      body.appendChild(el('p', 'set-hint run-ctx-hint', t('runCtxSub')))
+      if (!ways.length) wl.appendChild(el('div', 'run-none', t('wayOtherNone')))
     }
-    // Strata: the user's own start scripts (a launcher's .bat) instead of the plain start
-    if (s.kind === 'strata') {
-      var opts = [['', t('runScriptNone')]].concat((s.scripts || []).map(function (x) { return [x.path, x.name] }))
-      if (p.script && !opts.some(function (o) { return o[0] === p.script })) opts.push([p.script, p.script.split(/[\\/]/).pop()])
-      var sr = el('div', 'pick-row')
-      sr.appendChild(pick(opts, p.script, function (v) { save('script', v); drawLaunch() }))
-      sr.appendChild(button(t('runPickFile'), function () {
-        api('/api/pick-file', { start: p.script ? parentOf(p.script) : '' }).then(function (r) {
-          var f = r && r.paths && r.paths[0]
-          if (f) { save('script', f); drawLaunch() }
+    if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
+    else body.appendChild(smallBtn('+ ' + t('wayAdd'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link')).classList.add('run-add')
+    var w0 = p.wayObj, builtin = w0 && w0.type === 'builtin'
+    if (w0 && !builtin) body.appendChild(el('p', 'set-hint run-ctx-hint', w0.type === 'preset' ? t('wayPresetHint') : t('runScriptHint')))
+    if (builtin) {
+      // models: one radio row each, the facts that help choosing (size, quantization, the most context it takes)
+      body.appendChild(el('div', 'run-label', t('runModel')))
+      if (!models.length) {
+        var none = body.appendChild(el('div', 'run-none', t('runNoModels')))
+        if (s.kind === 'ollama') {
+          none.appendChild(el('div', 'muted small', t('runOllamaPull')))
+          var cmd = none.appendChild(el('div', 'pick-row'))
+          cmd.appendChild(el('code', 'path-val', s.hint || 'ollama pull qwen3:8b'))
+          cmd.appendChild(button(t('brCopy'), function () { copy(s.hint || 'ollama pull qwen3:8b') }))
+        }
+      }
+      var ml = models.length ? body.appendChild(el('div', 'run-models')) : null
+      models.forEach(function (m) {
+        var r = ml.appendChild(el('button', 'run-model' + (p.model && p.model.id === m.id ? ' on' : '')))
+        r.appendChild(el('span', 'run-radio'))
+        var info = r.appendChild(el('span', 'run-model-info'))
+        // Strata's sizes read best as "IQ3_XXS" / "Coder · IQ1_M"; the full name goes under it
+        var strata = s.kind === 'strata'
+        info.appendChild(el('span', 'run-model-name', strata ? strataName(m.id) : m.name))
+        var facts = [strata ? m.name : '', m.params, m.quant, sizeLabel(m.size), m.max_ctx ? t('runUpTo') + ' ' + ctxLabel(m.max_ctx) : '',
+          !m.max_ctx && m.ctx ? t('runSetUp') + ' ' + ctxLabel(m.ctx) : ''].filter(Boolean)
+        if (facts.length) info.appendChild(el('span', 'run-model-sub', facts.join(' · ')))
+        r.title = m.id
+        if (m.vision) r.appendChild(el('span', 'tag', t('runVision')))
+        if (m.loaded) r.appendChild(el('span', 'tag ok', t('runLoaded')))
+        r.onclick = function () { save('model', m.id); drawLaunch() }
+      })
+      if (p.model) {
+        var cr = body.appendChild(el('div', 'run-ctx'))
+        var cl = cr.appendChild(el('div', 'run-label', t('runCtx')))
+        cl.title = t('runCtxSub')
+        var chips = cr.appendChild(el('div', 'run-chips'))
+        ;(p.model.ctxs || [16384, 32768, 65536]).forEach(function (c) {
+          var b = chips.appendChild(el('button', c === p.ctx ? 'on' : '', ctxLabel(c)))
+          b.title = c.toLocaleString() + ' ' + t('tokens')
+          b.onclick = function () { save('ctx', c); drawLaunch() }
         })
-      }))
-      var srow = body.appendChild(row(t('runScript'), t('runScriptSub'), sr, true))
-      srow.classList.add('run-script')
+        body.appendChild(el('p', 'set-hint run-ctx-hint', t('runCtxSub')))
+      }
+      optionsBox(body, s, p)
     }
     // the one main action
     var foot = body.appendChild(el('div', 'run-foot'))
     jobBox = foot.appendChild(el('div', 'run-job'))
     drawJob()
-    var same = s.running && p.model && p.model.loaded && (!s.loaded.ctx || s.loaded.ctx === p.ctx) && !scripted
-    var label = same ? '✓ ' + t('runActive') : s.running && s.loaded && s.loaded.model ? t('runRestart') : t('runStart')
-    var go = foot.appendChild(el('button', 'btn run-go', label))
-    go.disabled = busy || same || !s.can_start || (!p.model && !scripted)
-    if (!s.can_start) go.title = t('runNoCli') + (s.how ? ': ' + s.how : '')
+    var same = builtin && s.running && p.model && p.model.loaded && (!lo.ctx || lo.ctx === p.ctx)
+    var go = foot.appendChild(el('button', 'btn run-go', same ? '✓ ' + t('runActive') : s.running ? t('runRestart') : t('runStart')))
+    go.disabled = busy || same || !w0 || (builtin && !p.model)
+    if (!w0) go.title = t('wayNone')
     go.onclick = function () {
-      launchAct({ do: 'start', kind: s.kind, model: p.model ? p.model.id : null, ctx: p.ctx, script: scripted ? p.script : null })
+      launchAct({ do: 'start', kind: s.kind, way: p.way, model: builtin && p.model ? p.model.id : null, ctx: builtin ? p.ctx : null, opts: builtin ? p.opts : null })
     }
   }
 
-  // ── Models: the local model server of the main agent ──
+  // ── Models / Connection / Answers: three tabs over the same settings (appsettings) ──
+  // Models: what the agent uses now + Run a model on this PC. Connection: servers found (one click), an address,
+  // a cloud API with its key, the recent ones. Answers: sampling and the default effort.
+  Object.assign(TEXT, {
+    connTab: ['Подключение', 'Connection'],
+    followed: ['{old} не отвечает, а {new} запущен — агент переключился на {new}', '{old} does not answer and {new} runs: the agent switched to {new}'],
+    nowHead: ['Агент сейчас работает с', 'The agent works with'],
+    nowOff: ['Сервер не отвечает — запустите модель ниже или подключите другой сервер', 'The server does not answer: start a model below or connect another server'],
+    nowChange: ['Сменить подключение', 'Change connection'],
+    connIntro: ['Куда агент отправляет запросы: сервер на этом компьютере, другой компьютер в сети или облачный API.',
+      'Where the agent sends its requests: a server on this computer, another computer on the network, or a cloud API.'],
+    foundHead: ['Найденные серверы', 'Servers found'], foundSub: ['Серверы моделей на этом компьютере. Нажмите «Подключить» — больше ничего не нужно.', 'Model servers on this computer. Press Connect: nothing else is needed.'],
+    foundScan: ['Ищу серверы…', 'Looking for servers…'], foundAgain: ['Искать снова', 'Search again'],
+    foundNone: ['На этом компьютере не найдено запущенных серверов. Запустите модель на вкладке «Модели» или введите адрес ниже.', 'No server runs on this computer. Start a model on the Models tab or type an address below.'],
+    connect: ['Подключить', 'Connect'], connected: ['Подключено', 'Connected'], startIt: ['Запустить…', 'Start…'],
+    addrHead: ['Другой компьютер или свой адрес', 'Another computer or an own address'],
+    addrSub: ['IP или адрес в любом виде: 192.168.0.10, 192.168.0.10:1234, http://host/v1. Порт и /v1 подберутся сами.', 'An IP or an address in any form: 192.168.0.10, 192.168.0.10:1234, http://host/v1. The port and /v1 are found.'],
+    addrPh: ['например 192.168.0.10', 'e.g. 192.168.0.10'],
+    cloudHead: ['Облачный API', 'Cloud API'], cloudSub: ['OpenAI, Claude, Gemini, OpenRouter и другие — нужен ключ провайдера.', 'OpenAI, Claude, Gemini, OpenRouter and others: the provider\'s key is needed.'],
+    answersIntro: ['Как модель отвечает. Пустое поле — значение по умолчанию для этой модели.', 'How the model answers. An empty field keeps this model\'s default.'],
+    runHow: ['Как запускать', 'How to start'],
+    otherKind: ['Другое', 'Other'],
+    about_strata: ['Быстрый движок для больших MoE-моделей на одной видеокарте', 'A fast engine for big MoE models on one GPU'],
+    about_lmstudio: ['Программа с каталогом моделей — самый простой старт', 'An app with a model catalog: the easiest start'],
+    about_ollama: ['Маленькая фоновая служба: модели качаются командой ollama pull', 'A small background service: models come with ollama pull'],
+    about_llamacpp: ['llama-server и файл .gguf', 'llama-server and a .gguf file'],
+    about_other: ['KoboldCpp, vLLM, Jan, text-generation-webui или любой сервер с OpenAI-совместимым API', 'KoboldCpp, vLLM, Jan, text-generation-webui or any server with an OpenAI-compatible API'],
+    wayBuiltin: ['Встроенный запуск', 'Builtin start'], wayBuiltinSub: ['Выбрать модель и контекст здесь', 'Pick a model and a context here'],
+    wayPresetSub: ['пресет, сохранённый в Strata', 'a preset saved in Strata'], wayPreset: ['пресет', 'preset'],
+    wayPresetHint: ['Пресет хранит модель, контекст и все флаги — как вы его сохранили в Strata.', 'The preset keeps the model, the context and every flag, as you saved it in Strata.'],
+    wayFound: ['найден', 'found'], wayOwn: ['ваш', 'yours'],
+    wayAdd: ['Свой способ запуска', 'Own way to start'], wayAddShort: ['Он стоит не там? Свой способ запуска', 'Somewhere else? Own way to start'],
+    wayNew: ['Свой способ запуска', 'Own way to start'], wayEdit: ['Изменить способ запуска', 'Edit the way to start'],
+    wayNewSub: ['Ваш .bat / .sh / .ps1 или строка команды — со своими флагами и моделью. Он откроется в своём окне, maxedcode дождётся сервера и подключится.',
+      'Your .bat / .sh / .ps1 or a command line, with your own flags and model. It opens in its own window; maxedcode waits for the server and connects.'],
+    wayOtherSub: ['Любой сервер с OpenAI-совместимым API: KoboldCpp, vLLM, Jan, text-generation-webui… Укажите, как вы его запускаете, и его адрес.',
+      'Any server with an OpenAI-compatible API: KoboldCpp, vLLM, Jan, text-generation-webui… Say how you start it and its address.'],
+    wayOtherNone: ['Добавьте, как вы запускаете свой сервер — дальше это одна кнопка.', 'Add how you start your server: from then on it is one button.'],
+    wayCmd: ['Команда или файл', 'Command or file'], wayCmdPh: ['например D:\\AI\\start.bat или koboldcpp.exe --config my.kcpps', 'e.g. D:\\AI\\start.bat or koboldcpp.exe --config my.kcpps'],
+    wayNameLbl: ['Название', 'Name'], wayName: ['например «Мой запуск 64K»', 'e.g. "My 64K start"'],
+    wayBase: ['Адрес сервера', 'Server address'], wayBaseSub: ['Пусто — обычный адрес этой программы.', 'Empty: this program\'s usual address.'],
+    wayBaseOther: ['Где сервер отвечает, например 127.0.0.1:5001 (KoboldCpp), :8000 (vLLM), :1337 (Jan).', 'Where the server answers, e.g. 127.0.0.1:5001 (KoboldCpp), :8000 (vLLM), :1337 (Jan).'],
+    wayNone: ['Выберите способ запуска', 'Pick a way to start'],
+    runMore: ['Дополнительно:', 'More settings:'], runChanged: ['изменено', 'changed'], runReset: ['Сбросить к обычным', 'Back to the defaults'], runHowScript: ['Ваш скрипт', 'Your script'], runHowModel: ['Модель и контекст', 'Model and context'],
+    runScriptHint: ['Скрипт сам выбирает модель, контекст и флаги. Он откроется в своём окне, maxedcode дождётся сервера и сам подключится.',
+      'The script picks the model, the context and the flags. It opens in its own window; maxedcode waits for the server and connects.'],
+    runScriptsNone: ['Своих скриптов пока нет', 'No own scripts yet'], runAddScript: ['Добавить свой файл…', 'Add an own file…'],
+    runYours: ['ваш запуск', 'your start'], runBig: ['Большая модель: первый запуск может занять несколько минут.', 'A big model: the first start can take a few minutes.'],
+  })
+  function renderModelTabs(note) { renderAgent(note); renderConn(); renderAnswers() }
+  // a form over state.settings.values: drafts kept across redraws, one Save button per tab
   var draft = {}
-  function renderAgent(note) {
-    var tab = $('tab-agent'), data = state.settings
-    sectionHead(tab, t('secModels'), t('modelsIntro'))
-    if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
-    if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
-    var saveBtn = el('button', 'btn', t('save')), status = el('span', 'muted', note || '')
-    function value(k) {
-      if (Object.prototype.hasOwnProperty.call(draft, k)) return draft[k]
-      var v = data.values[k]
-      return v === null || v === undefined ? '' : String(v)
-    }
+  function formKit(data, rerender) {
+    var saveBtn = el('button', 'btn', t('save')), status = el('span', 'muted', '')
+    function saved(k) { var v = data.values[k]; return v === null || v === undefined ? '' : String(v) }
+    function value(k) { return Object.prototype.hasOwnProperty.call(draft, k) ? draft[k] : saved(k) }
     function change(k, v) {
-      var saved = data.values[k] === null || data.values[k] === undefined ? '' : String(data.values[k])
-      if (v === saved) delete draft[k]
+      if (v === saved(k)) delete draft[k]
       else draft[k] = v
       saveBtn.disabled = !Object.keys(draft).length
       status.textContent = ''
@@ -3853,102 +4025,193 @@
       i.oninput = function () { change(k, i.value) }
       return i
     }
-    var server = data.server || {}, eff = data.effective || {}
+    function saveRow(tab, note) {
+      var actions = tab.appendChild(el('div', 'save-row'))
+      saveBtn.disabled = !Object.keys(draft).length
+      status.textContent = note || ''
+      saveBtn.onclick = function () {
+        var body = {}
+        Object.keys(draft).forEach(function (k) { body[k] = draft[k] === '' && k !== 'memory' ? null : draft[k] })
+        saveBtn.disabled = true
+        saveBtn.textContent = t('saving')
+        api('/api/settings', body).then(function (d) {
+          if (d.error) { saveBtn.textContent = t('save'); saveBtn.disabled = false; status.textContent = d.error; return }
+          draft = {}
+          gotSettings(d)
+          rerender(t('saved'))
+          renderMemory()
+        })
+      }
+      actions.appendChild(saveBtn)
+      actions.appendChild(status)
+    }
+    return { value: value, change: change, input: input, saveRow: saveRow, status: status }
+  }
+  // "The agent works with: LM Studio · twil-8b · 32K" — on Models and Connection, the first thing to see
+  function connNow(tab, withChange) {
+    var data = state.settings, server = data.server || {}, eff = data.effective || {}
+    var card = tab.appendChild(el('div', 'conn-now' + (server.online ? ' ok' : ' off')))
+    card.appendChild(el('span', 'state-dot ' + (server.online ? 'ok' : 'err')))
+    var info = card.appendChild(el('div', 'conn-now-info'))
+    info.appendChild(el('div', 'conn-now-head', t('nowHead')))
+    var what = [KIND_LABELS[server.kind] || t('localServer'), eff.model && eff.model !== 'local' ? shortModel(eff.model) : '',
+      server.online && server.ctx ? ctxLabel(server.ctx) : ''].filter(Boolean).join(' · ')
+    info.appendChild(el('div', 'conn-now-main', what))
+    info.appendChild(el('div', 'conn-now-sub', server.online ? String(eff.base_url || '').replace(/^https?:[/][/]/, '') : t('nowOff')))
+    if (withChange) card.appendChild(smallBtn(t('nowChange'), function () { openSection('conn') }, 'outline'))
+  }
+  function connectTo(x, b) {
+    var models = x.models || []
+    var body = { base_url: x.base, server: x.kind || null, model: null }
+    // LM Studio / Ollama list every downloaded model: pin the loaded one (another id makes them load it)
+    if ((x.kind === 'lmstudio' || x.kind === 'ollama') && (x.loaded || models.length > 1)) body.model = x.loaded || models[0]
+    if (b) b.disabled = true
+    return api('/api/settings', body).then(function (d) {
+      if (d.error) { if (b) b.disabled = false; toast(d.error, 4000); return }
+      gotSettings(d)
+      renderModelTabs()
+      toast(t('connected') + ': ' + (x.label || x.base), 2500)
+    })
+  }
+
+  function renderAgent(note) {
+    var tab = $('tab-agent'), data = state.settings
+    sectionHead(tab, t('secModels'), '')
+    if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
+    if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
+    connNow(tab, true)
     launchSection(tab)
-    // the server card: name + state dot + its address, like a provider card
-    tab.appendChild(el('div', 'set-group', t('connHead')))
-    tab.appendChild(el('p', 'set-hint', t('connSub')))
-    var card = el('div', 'set-provider')
-    tab.appendChild(card)
-    var head = el('div', 'set-provider-head')
-    head.appendChild(el('span', 'set-provider-name', (KIND_LABELS[server.kind] || t('localServer')) + ' · ' + String(eff.base_url || '').replace(/^https?:[/][/]/, '')))
-    var dot = el('span', 'state-dot ' + (server.online ? 'ok' : 'off'))
-    head.appendChild(dot)
-    head.appendChild(el('span', 'set-item-sub', server.online ? t('online') + (server.ctx ? ' · ' + server.ctx + ' ' + t('tokens') : '') : t('offline')))
-    var acts = el('span', 'set-provider-acts')
-    acts.appendChild(smallBtn(t('setupFind'), function () { $('modal').hidden = true; openSetup() }, 'outline'))
-    head.appendChild(acts)
-    card.appendChild(head)
-    var rows = el('div', 'set-rows')
-    card.appendChild(rows)
-    // a cloud API fills the address; any other server: the address in any form (IP, ip:port, URL)
-    var urlInput = input('base_url', eff.base_url)
-    var clouds = server.clouds || [], shownUrl = String(value('base_url') || eff.base_url || '').replace(/\/+$/, '').toLowerCase()
-    var nowCloud = (clouds.filter(function (c) { return c[1].toLowerCase() === shownUrl })[0] || [])[1] || ''
-    rows.appendChild(row(t('provider'), t('providerSub'), pick([['', t('provOwn')]].concat(clouds.map(function (c) { return [c[1], c[0]] })), nowCloud, function (v) {
-      if (!v) return urlInput.focus()
-      urlInput.value = v
-      change('base_url', v)
-      if (!server.has_key) keyInput.focus()
-    })))
-    rows.appendChild(row(t('base_url'), t('base_urlSub'), urlInput))
-    // the servers used before this one: one click switches back (a cloud one only fills the address: its key)
+    if (note) tab.appendChild(el('div', 'muted small', note))
+  }
+
+  var foundServers = null
+  function renderConn() {
+    var tab = $('tab-conn'), data = state.settings
+    if (!tab) return
+    sectionHead(tab, t('connTab'), t('connIntro'))
+    if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
+    if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
+    var server = data.server || {}, eff = data.effective || {}, kit = formKit(data, function () { renderModelTabs() })
+    connNow(tab, false)
+    // servers on this PC: found when the tab is drawn, connected with one click
+    var g = tab.appendChild(el('div', 'set-group-row'))
+    g.appendChild(el('div', 'set-group', t('foundHead')))
+    g.appendChild(smallBtn(t('foundAgain'), function () { foundServers = null; renderConn() }, 'link'))
+    tab.appendChild(el('p', 'set-hint', t('foundSub')))
+    var list = tab.appendChild(el('div', 'set-card found-list'))
+    function draw() {
+      list.innerHTML = ''
+      if (!foundServers) { var w = list.appendChild(el('div', 'run-empty')); w.appendChild(el('span', 'spin')); w.appendChild(el('span', 'muted', t('foundScan'))); return }
+      var any = false
+      foundServers.forEach(function (x) {
+        if (!x.running) return
+        any = true
+        var cur = String(eff.base_url || '').replace(/\/+$/, '').toLowerCase() === String(x.base || '').replace(/\/+$/, '').toLowerCase()
+        var r = list.appendChild(el('div', 'found-row'))
+        r.appendChild(el('span', 'state-dot ok'))
+        var info = r.appendChild(el('div', 'found-info'))
+        info.appendChild(el('div', 'found-name', x.label))
+        var models = x.models || []
+        info.appendChild(el('div', 'found-sub', [x.loaded || (models.length === 1 ? models[0] : models.length ? models.length + ' ' + t('setupModels') : ''),
+          x.ctx ? ctxLabel(x.ctx) : '', String(x.base || '').replace(/^https?:[/][/]/, '')].filter(Boolean).join(' · ')))
+        if (cur) r.appendChild(el('span', 'tag ok', '✓ ' + t('connected')))
+        else { var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) })) }
+      })
+      // installed, not running: started on the Models tab (model + context there)
+      foundServers.forEach(function (x) {
+        if (x.running) return
+        any = true
+        var r = list.appendChild(el('div', 'found-row'))
+        r.appendChild(el('span', 'state-dot off'))
+        var info = r.appendChild(el('div', 'found-info'))
+        info.appendChild(el('div', 'found-name', x.label))
+        info.appendChild(el('div', 'found-sub', t('setupInstalled')))
+        r.appendChild(smallBtn(t('startIt'), function () { launchKind = x.kind; openSection('agent') }, 'outline'))
+      })
+      if (!any) list.appendChild(el('div', 'run-none', t('foundNone')))
+    }
+    draw()
+    if (!foundServers) api('/api/servers').then(function (r) { foundServers = (r && r.servers) || []; draw() }, function () { foundServers = []; draw() })
+    // an address in any form
+    tab.appendChild(el('div', 'set-group', t('addrHead')))
+    tab.appendChild(el('p', 'set-hint', t('addrSub')))
+    var addr = inputEl(t('addrPh'))
+    var go = smallBtn(t('connect'), function () {
+      var v = addr.value.trim()
+      if (!v) return addr.focus()
+      go.disabled = true
+      api('/api/settings', { base_url: v, server: null, model: null }).then(function (d) {
+        go.disabled = false
+        if (d.error) return toast(d.error, 4000)
+        gotSettings(d)
+        renderModelTabs()
+        toast((d.server && d.server.online ? t('connected') : t('offline')) + ': ' + (d.effective || {}).base_url, 3000)
+      })
+    })
+    addr.onkeydown = function (e) { if (e.key === 'Enter') go.onclick() }
+    addRow(tab, [addr, go])
+    // the recent ones: one click back
     var recent = server.recent || []
     if (recent.length) {
-      var rbox = el('div', 'recent-list')
+      tab.appendChild(el('div', 'set-group', t('recentServers')))
+      tab.appendChild(el('p', 'set-hint', t('recentSub')))
+      var rbox = tab.appendChild(el('div', 'set-card'))
       recent.forEach(function (x) {
-        var label = (x.label ? x.label + ' · ' : '') + x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '')
-        var b = rbox.appendChild(el('button', 'btn small outline recent-btn', label))
-        b.title = t('recentUse') + ': ' + x.base_url + (x.model ? ' · ' + x.model : '')
-        b.onclick = function () {
-          if (x.cloud) {
-            urlInput.value = x.base_url
-            change('base_url', x.base_url)
-            if (x.model) change('model', x.model)
-            return keyInput.focus()
-          }
+        var b = smallBtn(x.cloud ? t('apiKey') + '…' : t('connect'), function () {
+          if (x.cloud) { kit.change('base_url', x.base_url); if (x.model) kit.change('model', x.model); renderConn(); return }
           b.disabled = true
           api('/api/settings', { base_url: x.base_url, server: x.server || null, model: x.model || null }).then(function (d) {
-            if (d.error) { b.disabled = false; status.textContent = d.error; return }
-            draft = {}
-            gotSettings(d)
-            renderAgent(t('saved'))
+            if (d.error) { b.disabled = false; return toast(d.error, 4000) }
+            gotSettings(d); renderModelTabs()
           })
-        }
+        }, 'outline')
+        listRow(rbox, x.label || x.base_url, x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : ''), b)
       })
-      rows.appendChild(row(t('recentServers'), t('recentSub'), rbox, true))
     }
+    // a cloud API: provider, key, model
+    tab.appendChild(el('div', 'set-group', t('cloudHead')))
+    tab.appendChild(el('p', 'set-hint', t('cloudSub')))
+    var rows = tab.appendChild(el('div', 'set-rows flat'))
+    var clouds = server.clouds || [], shownUrl = String(kit.value('base_url') || eff.base_url || '').replace(/\/+$/, '').toLowerCase()
+    var nowCloud = (clouds.filter(function (c) { return c[1].toLowerCase() === shownUrl })[0] || [])[1] || ''
     var keyInput = inputEl(server.has_key ? t('keySaved') + (server.key_end ? ' …' + server.key_end : '') : t('keyNone'), '')
     keyInput.type = 'password'
     keyInput.autocomplete = 'off'
-    keyInput.oninput = function () { change('api_key', keyInput.value) }    // emptied again: nothing changes
+    keyInput.oninput = function () { kit.change('api_key', keyInput.value) }    // emptied again: nothing changes
+    rows.appendChild(row(t('provider'), '', pick([['', '—']].concat(clouds.map(function (c) { return [c[1], c[0]] })), nowCloud, function (v) {
+      kit.change('base_url', v || String(eff.base_url || ''))
+      renderConn()
+    })))
     rows.appendChild(row(t('apiKey'), t('apiKeySub'), keyInput))
-    var models = (server.models || []).slice()
-    if (data.values.model && models.indexOf(data.values.model) < 0) models.push(data.values.model)
-    var auto = t('auto') + (eff.model ? ' (' + eff.model + ')' : server.online ? '' : ' (' + t('offline') + ')')
-    rows.appendChild(row(t('model'), nowCloud && !value('model') ? t('modelCloud') : t('modelSub'), pick([['', auto]].concat(models.map(function (m) { return [m, m] })), value('model'), function (v) { change('model', v) })))
-    rows.appendChild(row(t('ctx'), t('ctxSub'), el('span', 'field-value', server.online ? server.ctx + ' ' + t('tokens') : t('offline'))))
-    tab.appendChild(el('div', 'set-group', t('answers')))
-    var ans = el('div', 'set-rows flat')
-    tab.appendChild(ans)
-    ans.appendChild(row(t('temperature'), t('temperatureSub'), input('temperature', eff.temperature)))
-    // the rest of the CLI's /sampling: empty = what model_settings / the defaults give
-    ans.appendChild(row('top_p', t('topPSub'), input('top_p', eff.top_p)))
-    ans.appendChild(row('top_k', t('topKSub'), input('top_k', eff.top_k)))
-    ans.appendChild(row('min_p', t('minPSub'), input('min_p', eff.min_p)))
-    ans.appendChild(row(t('effortDefault'), t('effortSub'), pick([['', t('byDefault') + ' (' + (eff.effort || 'medium') + ')']].concat(EFFORTS.map(function (e) { return [e, e] })),
-      value('effort'), function (v) { change('effort', v) })))
-    var actions = el('div', 'save-row')
-    saveBtn.disabled = !Object.keys(draft).length
-    saveBtn.onclick = function () {
-      var body = {}
-      Object.keys(draft).forEach(function (k) { body[k] = draft[k] === '' && k !== 'memory' ? null : draft[k] })
-      saveBtn.disabled = true
-      saveBtn.textContent = t('saving')
-      api('/api/settings', body).then(function (d) {
-        if (d.error) { saveBtn.textContent = t('save'); saveBtn.disabled = false; status.textContent = d.error; return }
-        draft = {}
-        gotSettings(d)
-        renderAgent(t('saved'))
-        renderMemory()
-      })
+    if (nowCloud) {
+      var models = (server.models || []).slice()
+      if (data.values.model && models.indexOf(data.values.model) < 0) models.push(data.values.model)
+      rows.appendChild(row(t('model'), t('modelCloud'), pick([['', t('auto') + (eff.model ? ' (' + eff.model + ')' : '')]].concat(models.map(function (m) { return [m, m] })),
+        kit.value('model'), function (v) { kit.change('model', v) })))
     }
-    actions.appendChild(saveBtn)
-    actions.appendChild(status)
-    tab.appendChild(actions)
+    kit.saveRow(tab)
     var f = data.files || {}
-    filesNote(tab, [f.config, f.state])
-    renderMemory()
+    filesNote(tab, [f.config])
+  }
+
+  function renderAnswers() {
+    var tab = $('tab-answers'), data = state.settings
+    if (!tab) return
+    sectionHead(tab, t('answers'), t('answersIntro'))
+    if (!data) { tab.appendChild(el('p', 'muted', t('loading'))); return }
+    if (data.error) { tab.appendChild(el('div', 'error-box', data.error)); return }
+    var eff = data.effective || {}, kit = formKit(data, function (n) { renderAnswers(); renderAgent() })
+    var ans = tab.appendChild(el('div', 'set-rows flat'))
+    ans.appendChild(row(t('effortDefault'), t('effortSub'), pick([['', t('byDefault') + ' (' + (eff.effort || 'medium') + ')']].concat(EFFORTS.map(function (e) { return [e, e] })),
+      kit.value('effort'), function (v) { kit.change('effort', v) })))
+    ans.appendChild(row(t('temperature'), t('temperatureSub'), kit.input('temperature', eff.temperature)))
+    // the rest of the CLI's /sampling: empty = what model_settings / the defaults give
+    ans.appendChild(row('top_p', t('topPSub'), kit.input('top_p', eff.top_p)))
+    ans.appendChild(row('top_k', t('topKSub'), kit.input('top_k', eff.top_k)))
+    ans.appendChild(row('min_p', t('minPSub'), kit.input('min_p', eff.min_p)))
+    kit.saveRow(tab)
+    var f = data.files || {}
+    filesNote(tab, [f.state])
   }
 
   // ── Memory: the shared MEMORY.md (every CLI and window session) and the memory files of the chat's folder ──
@@ -4154,6 +4417,8 @@
     if (d && d.server && d.server.online) state.ctx = d.server.ctx
     renderSeats()
     renderStatus()
+    // the server does not answer: look once whether another one runs on this PC (autoFollow)
+    if (d && d.server && !d.server.online && !d.setup_needed) { if (launchData) autoFollow(); else loadLaunch() }
     if (d && d.setup_needed && !setupShown) openSetup()
   }
   // ── first start (a git clone opened as the window): which model server to use, found on this PC ──
@@ -4277,15 +4542,15 @@
     }
     scan()
   }
-  var SECTIONS = ['general', 'chat', 'agent', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
+  var SECTIONS = ['general', 'chat', 'agent', 'conn', 'answers', 'cloud', 'cli', 'mcp', 'hooks', 'perms', 'memory', 'browser']
   function openSettings() {
     $('modal').hidden = false
     renderGeneral()
     renderChat()
-    renderAgent()
+    renderModelTabs()
     renderCli()
     renderBrowser()
-    api('/api/settings').then(function (d) { gotSettings(d); renderAgent() })
+    api('/api/settings').then(function (d) { gotSettings(d); renderModelTabs() })
     loadCli().then(function () { renderCli() })
     renderCloud()
     api('/api/cloud').then(function (d) { cloudData = d; renderCloud() })

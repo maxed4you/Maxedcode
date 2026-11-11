@@ -557,7 +557,8 @@ def launch_job():
         return None
     return {"id": j["id"], "do": j["do"], "kind": j["kind"], "model": j.get("model"), "ctx": j.get("ctx"),
             "lines": j["lines"][-1:], "pct": j.get("pct"), "result": j["result"],
-            "secs": int((j.get("ended") or time.monotonic()) - j["started"])}
+            "secs": int((j.get("ended") or time.monotonic()) - j["started"]),
+            "age": int(time.monotonic() - j["ended"]) if j.get("ended") else 0}
 
 
 def launch_begin(data):
@@ -574,7 +575,7 @@ def launch_begin(data):
                 return launch_job()
         if what not in ("start", "stop"):
             return {"error": "do: start, stop or cancel"}
-        body = {k: data.get(k) for k in ("kind", "model", "ctx", "script")}
+        body = {k: data.get(k) for k in ("kind", "model", "ctx", "script", "way", "opts", "base")}
         proc = subprocess.Popen([sys.executable, "-m", "maxedcode.launch", what], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
                                 errors="replace", cwd=str(Path.home()), env=agent_env(), **POPEN_GROUP,
@@ -1059,7 +1060,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/servers":          # start an installed server: {"start": kind} -> {"base": url | null}
             # servers.start waits up to 180 s for a model to load
             return self.send(200, module("maxedcode.servers", "start", str(data.get("start") or ""), timeout=200))
-        if path == "/api/launch":           # start / stop / cancel a model server: {"do", "kind", "model", "ctx"}
+        if path == "/api/launch":           # start / stop / cancel a model server: {"do", "kind", "way", "model", "ctx"}
+            if data.get("do") in ("way-save", "way-remove"):        # own ways to start: the catalog after it
+                return self.send(200, {**module("maxedcode.launch", "set", body=data, timeout=90), "job": launch_job()})
             return self.send(200, {"job": launch_begin(data)})
         if path == "/api/cli":
             return self.send(200, cli(data.get("cwd"), data))

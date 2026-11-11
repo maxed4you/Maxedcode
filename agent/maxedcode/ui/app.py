@@ -591,6 +591,16 @@ class AgentApp(App):
         await self.banner()
         if self._model_note:
             await self.note(self._model_note, "grey50")
+        if not info.get("online"):
+            # the server here does not answer but another one runs on this PC: follow it (launch.follow_target)
+            from .. import launch, servers
+            hit = None
+            with suppress(Exception):
+                hit = await asyncio.to_thread(launch.follow_target, config.BASE_URL)
+            if hit:
+                old = servers.LABELS.get(config.SERVER_KIND) or config.BASE_URL
+                await self.note(f"{old} does not answer and {hit['label']} runs on this computer: switching to it", "grey50")
+                await self.use_server(hit["base"], hit["kind"], hit["model"])
         self.update_notes()
         await self.refresh_session_tabs(force=True)
         h = await hooks.run("SessionStart", {"session_id": self.sid, "cwd": os.getcwd(), "event": "SessionStart",
@@ -2653,83 +2663,111 @@ class AgentApp(App):
             scr.show()
 
     async def local_cmd(self, arg):
-        """/local: run a model on this PC in a few picks - the program (Strata, LM Studio, Ollama, llama.cpp), the
-        model, the context - then the agent uses it. /local stop stops the one that runs. maxedcode/launch.py does
-        the work, the same as Settings -> Models -> Run a model in the window."""
+        """/local: run a model on this PC the way this user starts it - the program (Strata, LM Studio, Ollama,
+        llama.cpp, other), the way (the builtin start with a model and a context, a preset, a found script, an
+        own way), then the agent uses it. /local stop stops the one that runs. maxedcode/launch.py does the work,
+        the same as Settings -> Models in the window (the same ways and settings, launch.json)."""
         from .. import launch
         await self.note("looking for model servers and models on this computer…", "grey50")
         cat = await asyncio.to_thread(launch.catalog)
         progs = cat["servers"]
+
+        def name(x):
+            return x["label"] or "Other server"
         if arg.strip().lower() in ("stop", "off"):
             on = [x for x in progs if x["running"]]
             if not on:
                 return await self.note("no model server runs on this computer", "yellow")
             x = on[0]
             if len(on) > 1:
-                labels = [f"{y['label']} · {(y['loaded'] or {}).get('model') or 'running'}" for y in on]
+                labels = [f"{name(y)} · {(y['loaded'] or {}).get('model') or 'running'}" for y in on]
                 choice = await self.push_screen(Pick("Stop which server?", labels, False), wait_for_dismiss=True)
                 if not choice:
                     return
                 x = on[labels.index(choice)]
-            await self.note(f"stopping {x['label']}…", "grey50")
-            r = await asyncio.to_thread(launch.stop, x["kind"])
-            return await self.note(f"{x['label']}: {r['text']}", "green" if r["ok"] else "yellow")
+            await self.note(f"stopping {name(x)}…", "grey50")
+            r = await asyncio.to_thread(launch.stop, x["kind"], None, x.get("base"))
+            return await self.note(f"{name(x)}: {r['text']}", "green" if r["ok"] else "yellow")
 
         def ctx_k(n):
             return f"{n // 1024}K" if n < 1048576 else f"{n // 1048576}M"
 
         def state(x):
+            if x["kind"] == launch.OTHER:
+                return (f"running: {x['loaded'].get('label')} at {x['base']}" if x["running"] else x["about"]) + \
+                    (f" · {len(x['ways'])} own ways" if x["ways"] else "")
             if x["running"]:
                 lo = x.get("loaded") or {}
                 return "running" + (f": {lo['model']}" if lo.get("model") else ", no model loaded") + \
                     (f" · {ctx_k(lo['ctx'])}" if lo.get("ctx") else "")
-            if not x["installed"]:
+            if not x["installed"] and not x["ways"]:
                 return f"not installed - {x['about']}"
-            return f"installed, not running · {len(x['models'])} models"
-        labels = [f"{x['label']} · {state(x)}" for x in progs]
+            return f"not running · {len(x['models'])} models" + (f" · {len(x['ways']) - 1} own ways" if len(x["ways"]) > 1 else "")
+        labels = [f"{name(x)} · {state(x)}" for x in progs]
         choice = await self.push_screen(Pick("Run a model on this computer: which program?", labels, False,
-                                             body="maxedcode starts the server, loads the model with the context you "
-                                                  "pick and switches the agent to it. /local stop stops it."),
+                                             body="maxedcode starts it the way you start it (its builtin start, your "
+                                                  "script or preset) and switches the agent to it. /local stop stops it."),
                                         wait_for_dismiss=True)
         if not choice:
             return
         x = progs[labels.index(choice)]
-        if not x["installed"]:
-            return await self.note(f"{x['label']} is not installed: download it from {x['download']}, then /local again",
+        ways = x["ways"]
+        if not x["installed"] and not ways:
+            return await self.note(f"{name(x)} is not installed: download it from {x['download']}, then /local again",
                                    "yellow")
-        if not x["can_start"]:
-            return await self.note(f"{x['label']}: its start command is not found - {x.get('how') or 'start it yourself'}",
-                                   "yellow")
-        models, script = x["models"], None
-        opts = []
-        for m in models:
-            facts = [m.get("params"), m.get("quant"), f"{m['size'] / 1e9:.1f} GB" if m.get("size") else "",
-                     f"up to {ctx_k(m['max_ctx'])}" if m.get("max_ctx") else "", "loaded" if m.get("loaded") else ""]
-            opts.append(" · ".join([m["name"], *[f for f in facts if f]]))
-        scripts = [f"own script: {sc['name']}" for sc in x.get("scripts") or []]
-        if not opts and not scripts:
-            hint = f" (in a terminal: {x['hint']})" if x.get("hint") else ""
-            return await self.note(f"{x['label']} has no models yet{hint}", "yellow")
-        choice = await self.push_screen(Pick(f"{x['label']}: which model?", opts + scripts, False), wait_for_dismiss=True)
-        if not choice:
-            return
+        # the way: the one started last, else the user's own, a found script, a preset, the builtin start
+        add = "+ add your own way (a script or a command line)"
+        order = sorted(ways, key=lambda w: (w["id"] != x.get("last_way"),
+                                            ["own", "found", "program", "builtin"].index(w.get("source", "builtin"))))
+
+        def way_label(w):
+            if w["type"] == "builtin":
+                return "builtin start - pick a model and a context here"
+            kind = {"own": "yours", "found": "found", "program": "preset"}.get(w.get("source"), "")
+            return f"{w['name']} ({kind}) · {w.get('command') or 'a preset saved in Strata'}"
+        names = [way_label(w) for w in order]
+        way = order[0] if len(order) == 1 else None
+        if len(order) != 1:
+            pick = await self.push_screen(Pick(f"{name(x)}: how to start it", names + [add], False,
+                                               body="A script or a preset carries its own model, context and flags; "
+                                                    "the builtin start asks for them."), wait_for_dismiss=True)
+            if not pick:
+                return
+            if pick == add:
+                way = await self._local_add_way(x)
+                if not way:
+                    return
+            else:
+                way = order[names.index(pick)]
         model, ctx = None, None
-        if choice in scripts:
-            script = x["scripts"][scripts.index(choice)]["path"]
-        else:
-            model = models[opts.index(choice)]
+        if way["type"] == "builtin":
+            models = x["models"]
+            mopts = []
+            for m in models:
+                facts = [m.get("params"), m.get("quant"), f"{m['size'] / 1e9:.1f} GB" if m.get("size") else "",
+                         f"up to {ctx_k(m['max_ctx'])}" if m.get("max_ctx") else "", "loaded" if m.get("loaded") else ""]
+                mopts.append(" · ".join([m["name"], *[f for f in facts if f]]))
+            if not mopts:
+                hint = f" (in a terminal: {x['hint']})" if x.get("hint") else ""
+                return await self.note(f"{name(x)} has no models yet{hint}", "yellow")
+            choice = await self.push_screen(Pick(f"{name(x)}: which model?", mopts, False), wait_for_dismiss=True)
+            if not choice:
+                return
+            model = models[mopts.index(choice)]
             best = model["pick_ctx"]
             sizes = [best] + [c for c in model["ctxs"] if c != best]
-            names = [f"{ctx_k(c)}  ({c:,} tokens)" + ("  - last used / suggested" if c == best else "") for c in sizes]
-            pick = await self.push_screen(Pick(f"{model['name']}: context", names, True,
+            cnames = [f"{ctx_k(c)}  ({c:,} tokens)" + ("  - last used / suggested" if c == best else "") for c in sizes]
+            pick = await self.push_screen(Pick(f"{model['name']}: context", cnames, True,
                                                body="How much text the model holds at once. More: longer work "
                                                     "without compaction, but more graphics memory. 32K-64K is "
                                                     "comfortable; the agent needs 16K at least. Custom: a number "
-                                                    "of tokens (64k works too)."), wait_for_dismiss=True)
+                                                    "of tokens (64k works too). The program's own settings "
+                                                    "(Settings -> Models -> More settings in the window) stay."),
+                                          wait_for_dismiss=True)
             if not pick:
                 return
-            if pick in names:
-                ctx = sizes[names.index(pick)]
+            if pick in cnames:
+                ctx = sizes[cnames.index(pick)]
             else:
                 digits = int(re.sub(r"\D", "", pick) or 0)
                 ctx = digits * 1024 if 0 < digits < 1024 else digits or best
@@ -2737,9 +2775,10 @@ class AgentApp(App):
 
         def say(text, pct=None):
             lines.append((text, pct))
-        task = asyncio.ensure_future(asyncio.to_thread(launch.start, x["kind"], model and model["id"], ctx, script, say))
-        what = (model or {}).get("name") or Path(script).name
-        await self.note(f"starting {x['label']}: {what}" + (f" · context {ctx_k(ctx)}" if ctx else "") +
+        task = asyncio.ensure_future(asyncio.to_thread(launch.start, x["kind"], model and model["id"], ctx, None, say,
+                                                       way["id"], x.get("opts") or {}))
+        what = (model or {}).get("name") or way.get("name") or name(x)
+        await self.note(f"starting {name(x)}: {what}" + (f" · context {ctx_k(ctx)}" if ctx else "") +
                         " (it keeps loading in the background; /local stop stops it)", "grey50")
         shown, last, started = 0.0, "", time.monotonic()
         while not task.done():
@@ -2751,9 +2790,30 @@ class AgentApp(App):
                                 "grey50")
         done = task.result()
         if not done.get("ok"):
-            return await self.note(f"{x['label']} did not start: {done.get('error')}", "red")
+            return await self.note(f"{name(x)} did not start: {done.get('error')}", "red")
         await self.use_server(done["base"], done["kind"],
                               done.get("model") if done["kind"] in ("lmstudio", "ollama") else None)
+
+    async def _local_add_way(self, x):
+        """/local: an own way to start a program - a script file or a command line, and the address it serves."""
+        from .. import launch
+        cmd = await self.push_screen(Pick(f"{x['label'] or 'Other server'}: the start command or script", [], True,
+                                          body="A .bat / .sh / .ps1 file (quote a path with spaces) or a command line, "
+                                               "e.g. koboldcpp.exe --config my.kcpps. It runs in a window of its own."),
+                                     wait_for_dismiss=True)
+        if not cmd:
+            return None
+        default = x["base"] if x["kind"] != launch.OTHER else ""
+        base = await self.push_screen(Pick("The address it answers at", [default] if default else [], True,
+                                           body="e.g. 127.0.0.1:5001 (KoboldCpp), :8000 (vLLM), :1337 (Jan); the port "
+                                                "and /v1 are enough."), wait_for_dismiss=True)
+        if not base and x["kind"] == launch.OTHER:
+            return None
+        if base and base.startswith(":"):
+            base = "127.0.0.1" + base
+        w = await asyncio.to_thread(launch.save_way, x["kind"], "", cmd, base or "")
+        await self.note(f"saved: {w['name']} · {w['command']}" + (f" → {w['base']}" if w.get("base") else ""), "green")
+        return {**w, "source": "own"}
 
     async def settings_cmd(self, arg):
         """/settings: every setting in one deck with its value now and what it is for; Enter opens it (its slash

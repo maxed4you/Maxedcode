@@ -50,7 +50,9 @@ class Contexts(unittest.TestCase):
         self.assertEqual(st["kind"], "strata")
         self.assertEqual(st["model"]["lmstudio"], "a")
         self.assertEqual(st["ctx"]["lmstudio|a"], 32768)
-        self.assertEqual(st["scripts"][0], str(Path(_HOME.name) / "start.bat"))
+        own = launch.own_ways(st)
+        self.assertEqual(own[0]["command"], str(Path(_HOME.name) / "start.bat"))   # a picked script: an own way
+        self.assertEqual(st["way"]["strata"], own[0]["id"])
 
 
 class Gguf(unittest.TestCase):
@@ -147,14 +149,111 @@ class LmStudio(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertIn(["lms", "unload", "--all"], self.cmds)
         load = next(c for c in self.cmds if c[1] == "load" and "-y" in c)
-        self.assertEqual(load[:5], ["lms", "load", "gemma", "--parallel", "1"])
-        self.assertIn("32768", load)
+        self.assertEqual(load[:3], ["lms", "load", "gemma"])
+        self.assertEqual(load[load.index("--parallel") + 1], "1")       # the default of the setting
+        self.assertEqual(load[load.index("--context-length") + 1], "32768")
+
+    def test_the_chosen_settings_and_own_flags_reach_lms_load(self):
+        r = launch.lms_start("gemma", 65536, lambda t, p=None: None, opts={"gpu": "max", "parallel": "2", "args": "--ttl 600"})
+        self.assertTrue(r["ok"])
+        load = next(c for c in self.cmds if c[1] == "load" and "-y" in c)
+        self.assertEqual(load[load.index("--gpu") + 1], "max")
+        self.assertEqual(load[load.index("--parallel") + 1], "2")
+        self.assertEqual(load[load.index("--ttl") + 1], "600")
 
     def test_nothing_reloads_when_the_choice_is_already_served(self):
         self.loaded = [("gemma", 32768)]
         r = launch.lms_start("gemma", 32768, lambda t, p=None: None)
         self.assertTrue(r["ok"])
         self.assertFalse(any(c[1] in ("load", "unload") for c in self.cmds if len(c) > 1 and c[2:3] != ["--help"]))
+
+
+class LmStudioOff(unittest.TestCase):
+    def test_a_look_at_the_models_never_wakes_lm_studio(self):
+        """`lms` starts LM Studio: with its server off the list comes from its folder, publisher/repo/file."""
+        with tempfile.TemporaryDirectory() as d:
+            for rel in ("pub/repo-GGUF/model-Q4.gguf", "Strata-shards/part-00001-of-00002.gguf"):
+                Path(d, rel).parent.mkdir(parents=True, exist_ok=True)
+                gguf(Path(d, rel), 8192)
+                with open(Path(d, rel), "r+b") as f:
+                    f.truncate(60_000_000)
+            st = launch.load_state()
+            st.pop("lms_models", None)
+            launch.save_state(st)
+            with patch.object(servers, "port_down", lambda *a, **k: True),                     patch.object(launch, "lms_folder", lambda: Path(d)),                     patch.object(launch, "run") as run:
+                models = launch.lms_models()
+            run.assert_not_called()
+            self.assertEqual([m["id"] for m in models], ["pub/repo-GGUF/model-Q4.gguf"])
+
+
+class Ways(unittest.TestCase):
+    def setUp(self):
+        launch.save_state({})
+
+    def test_own_found_preset_and_builtin_ways_in_order(self):
+        launch.save_way("strata", "mine 64K", "D:/AI/mine.bat")
+        launch.save_way("lmstudio", "lm", "lms load x")
+        ws = launch.ways("strata", cli=True, presets=["fast"], scripts=["D:/AI/Strata/launcher/bat/start.bat"])
+        self.assertEqual([w["source"] for w in ws], ["builtin", "program", "found", "own"])
+        self.assertEqual(ws[1]["id"], "preset:fast")
+        self.assertEqual(ws[3]["name"], "mine 64K")
+        self.assertEqual([w["source"] for w in launch.ways("strata", cli=None)], ["own"])   # no strata command
+
+    def test_save_edit_and_remove_an_own_way(self):
+        w = launch.save_way("other", "kobold", "koboldcpp.exe --config a.kcpps", ":5001")
+        self.assertTrue(w["base"].endswith(":5001/v1"))
+        same = launch.save_way("other", "kobold 2", "koboldcpp.exe --config b.kcpps", "127.0.0.1:5001", w["id"])
+        self.assertEqual(same["id"], w["id"])
+        self.assertEqual(len(launch.own_ways()), 1)
+        self.assertEqual(launch.own_ways()[0]["command"], "koboldcpp.exe --config b.kcpps")
+        launch.remember("other", way=w["id"])
+        launch.remove_way(w["id"])
+        self.assertEqual(launch.own_ways(), [])
+        self.assertNotIn("other", launch.load_state().get("way") or {})
+
+    def test_the_first_versions_picked_scripts_become_own_ways(self):
+        launch.save_state({"scripts": ["D:/x/go.bat"]})
+        own = launch.own_ways()
+        self.assertEqual((own[0]["kind"], own[0]["command"], own[0]["name"]), ("strata", "D:/x/go.bat", "go"))
+
+    def test_an_address_in_any_form(self):
+        self.assertEqual(launch.norm_base("", "ollama"), "http://127.0.0.1:11434/v1")
+        self.assertEqual(launch.norm_base("192.168.0.10", "lmstudio"), "http://192.168.0.10:1234/v1")
+        self.assertEqual(launch.norm_base("127.0.0.1:5001", "other"), "http://127.0.0.1:5001/v1")
+        self.assertEqual(launch.norm_base(":8000", "other"), "http://127.0.0.1:8000/v1")
+        self.assertEqual(launch.norm_base("1337", "other"), "http://127.0.0.1:1337/v1")
+
+
+class Settings(unittest.TestCase):
+    def test_flags_env_and_defaults(self):
+        self.assertEqual(launch.opt_flags("strata", {"kv": "q4_0", "vision": "", "args": "--set a=b"}),
+                         ["--kv", "q4_0", "--set", "a=b"])
+        self.assertEqual(launch.opt_flags("lmstudio", {}), ["--parallel", "1"])     # one slot unless chosen
+        env = launch.opt_env("ollama", {"flash": "1", "kv": "q8_0", "env": "OLLAMA_DEBUG=1 bad-name=x"})
+        self.assertEqual(env, {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1",
+                               "OLLAMA_KEEP_ALIVE": "30m", "OLLAMA_DEBUG": "1"})
+        self.assertEqual([o["key"] for o in launch.options("ollama")][-1], "env")     # no flags for ollama serve
+        self.assertEqual(launch.options("other"), [])
+
+
+class Script(unittest.TestCase):
+    def test_an_own_way_runs_in_its_window_and_the_agent_follows_its_address(self):
+        launched = []
+        answers = iter([False, False, True])
+        with patch.object(launch, "console", lambda command, **k: launched.append(command)), \
+                patch.object(servers, "port_down", lambda *a, **k: True), \
+                patch.object(launch, "_ready", lambda kind, base: next(answers, True)), \
+                patch.object(servers, "kind_of", lambda *a, **k: "koboldcpp"), \
+                patch.object(launch.time, "sleep", lambda s: None):
+            r = launch.script_start("other", {"id": "own:1", "command": "koboldcpp.exe --config a.kcpps",
+                                              "base": "http://127.0.0.1:5001/v1", "name": "kobold"}, lambda t, p=None: None)
+        self.assertTrue(r["ok"])
+        self.assertEqual((r["kind"], r["base"]), ("koboldcpp", "http://127.0.0.1:5001/v1"))
+        self.assertEqual(launched, ["koboldcpp.exe --config a.kcpps"])
+
+    def test_a_missing_script_file_and_a_missing_address_are_said(self):
+        self.assertIn("not there", launch.script_start("strata", {"command": "D:/nope/x.bat"}, lambda *a: None)["error"])
+        self.assertIn("address", launch.script_start("other", {"command": "kobold.exe"}, lambda *a: None)["error"])
 
 
 class Start(unittest.TestCase):

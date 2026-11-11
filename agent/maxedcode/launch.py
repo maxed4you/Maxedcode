@@ -1,22 +1,27 @@
-"""Start and stop a model server on this PC with the model and the context the user picks, in one click.
+"""Start and stop a model server on this PC the way each user starts it, in one click.
 
-The window (Settings -> Models, the model menu under the input) and the CLI (/run) use it. One adapter per server:
+The window (Settings -> Models, the model menu under the input) and the CLI (/local) use it. Every program
+has its ways to start (catalog()["servers"][i]["ways"]), and each user keeps their own:
 
-* Strata     - `strata launch --model <size> --context <n> --no-tui --yes` (the server runs on, the command
-               returns); `strata launch --stop`. Own start scripts (.bat / .sh) are started as they are, in a
-               window of their own: <strata>\\launcher\\bat\\*.bat and any file the user picks.
-* LM Studio  - `lms server start`, `lms unload --all`, `lms load <model> --context-length <n> -y`.
-* Ollama     - the window is OLLAMA_CONTEXT_LENGTH (a request through /v1 cannot set it: Ollama reloads the
-               model with its default window), so it is written for the user and the server is restarted
-               when it serves another one; the model is loaded with keep_alive.
-* llama.cpp  - `llama-server -m <file.gguf> -c <n>` on port 8080; GGUF files are found in the usual folders
-               (LM Studio's model folder, the Hugging Face and llama.cpp caches, ~/models).
+* builtin  - a model and a context, plus this program's own settings (OPTIONS: GPU offload, cache format,
+             parallel slots, pictures, own flags, environment), saved per program:
+             Strata `strata launch --model <size> --context <n> --no-tui --yes`; LM Studio `lms load <model>
+             --context-length <n> --parallel 1`; Ollama OLLAMA_CONTEXT_LENGTH and its other variables (a request
+             through /v1 cannot set the window: Ollama reloads the model with its default one), the server
+             restarted when it serves other values; llama.cpp `llama-server -m <file.gguf> -c <n>` (GGUF files
+             found in LM Studio's folder, the Hugging Face and llama.cpp caches, ~/models).
+* preset   - what the program itself saved: Strata's presets (`strata launch --list-presets`).
+* script   - a start script or a command line, run as it is in a console window of its own, then the server is
+             awaited at its address: found ones (<strata>\\launcher\\bat\\*.bat) and the user's own ("+ own
+             way"), for any program - also for the ones with no builtin start ("other": KoboldCpp, vLLM,
+             Jan, text-generation-webui, anything with an OpenAI-compatible API).
 
-    python -m maxedcode.launch get                  -> {"servers": [...], "last": {...}}
-    python -m maxedcode.launch start < {"kind", "model", "ctx", "script"}
+    python -m maxedcode.launch get                  -> {"servers": [...], "last": kind}
+    python -m maxedcode.launch start < {"kind", "way", "model", "ctx", "opts"}
                                                     -> progress lines {"text", "pct"?}, the last one
                                                        {"done": true, "ok", "base", "model", "ctx", "error"}
-    python -m maxedcode.launch stop < {"kind"}      -> {"ok", "text"}
+    python -m maxedcode.launch stop < {"kind", "base"?}  -> {"ok", "text"}
+    python -m maxedcode.launch set < {"do": "way-save" | "way-remove", ...}  -> get's answer
 
 A started server is chosen for the agent at once (appsettings: base_url, server, model). Standard library only,
 apart from maxedcode.servers (and appsettings / config when a start is saved).
@@ -25,33 +30,139 @@ import concurrent.futures as cf
 import json
 import os
 import re
+import secrets
+import shlex
 import shutil
 import struct
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 from contextlib import suppress
 from pathlib import Path
 
 from . import servers
 
-KINDS = ("strata", "lmstudio", "ollama", "llamacpp")
+KINDS = ("strata", "lmstudio", "ollama", "llamacpp")     # the ones with a builtin start
+OTHER = "other"                                          # any other server: own ways only
 DOWNLOAD = {"strata": "https://github.com/Niko1221/Strata", "lmstudio": "https://lmstudio.ai/download",
             "ollama": "https://ollama.com/download", "llamacpp": "https://github.com/ggml-org/llama.cpp/releases"}
 # what each one is, for someone who has none of them yet
 ABOUT = {"strata": "fast engine for big MoE models on one GPU",
          "lmstudio": "an app with a model catalog: the easiest start",
          "ollama": "a small background service: `ollama pull <model>`",
-         "llamacpp": "llama-server and a .gguf file"}
+         "llamacpp": "llama-server and a .gguf file",
+         OTHER: "KoboldCpp, vLLM, Jan, text-generation-webui or any server with an OpenAI-compatible API"}
 CTX_STEPS = (16384, 32768, 65536, 131072, 262144)
 DEFAULT_CTX = 32768
-WAIT = {"strata": 900, "lmstudio": 900, "ollama": 600, "llamacpp": 600}
+WAIT = {"strata": 900, "lmstudio": 900, "ollama": 600, "llamacpp": 600, OTHER: 900}
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | NO_WINDOW
 
 
-# ---------- own state: the last choice per server, started processes, own scripts ----------
+def _o(key, label, choices, hint=None, default="", flag=None, env=None):
+    """One setting of a builtin start: label / hint / choice names are [ru, en] (the page picks one)."""
+    return {"key": key, "label": label, "hint": hint, "choices": choices, "default": default, "flag": flag, "env": env}
+
+
+AS_IS = ["как обычно", "as usual"]
+# The settings of each builtin start (Settings -> Models -> More settings): a choice "" keeps the program's own
+# default. "args" and "env" (free text) are added for every program but Ollama (env only: `ollama serve` has no
+# model flags).
+OPTIONS = {
+    "strata": [
+        _o("vision", ["Картинки", "Pictures"], [["", AS_IS], ["off", ["выкл — меньше памяти", "off: less memory"]],
+                                                 ["cpu", ["читает процессор", "read by the CPU"]],
+                                                 ["gpu", ["читает видеокарта", "read by the GPU"]]],
+           ["Может ли модель смотреть картинки. Выкл — больше памяти под текст.", "Whether the model reads pictures. Off leaves more memory for text."],
+           flag="--vision"),
+        _o("kv", ["Память разговора", "Conversation memory"],
+           [["", AS_IS], ["q4_0", ["q4_0 — вдвое меньше памяти", "q4_0: half the memory"]], ["int8", ["int8", "int8"]],
+            ["k8v4", ["k8v4", "k8v4"]], ["fp16", ["fp16 — точнее, больше памяти", "fp16: exact, more memory"]]],
+           ["Формат кэша контекста (--kv).", "The context cache format (--kv)."], flag="--kv"),
+        _o("drafting", ["Ускорение черновиком", "Drafting"],
+           [["", AS_IS], ["mtp", ["mtp", "mtp"]], ["dflash2", ["dflash2", "dflash2"]], ["off", ["выкл", "off"]]],
+           ["Как модель угадывает следующие слова наперёд (--drafting).", "How the model guesses the next words ahead (--drafting)."],
+           flag="--drafting"),
+        _o("parallel", ["Запросов одновременно", "Requests at once"], [["", AS_IS], ["1", ["1", "1"]], ["2", ["2", "2"]], ["4", ["4", "4"]]],
+           ["Агенту хватает одного; больше — больше памяти.", "One is enough for the agent; more takes more memory."], flag="--parallel"),
+    ],
+    "lmstudio": [
+        _o("gpu", ["Видеокарта", "GPU offload"], [["", ["авто", "auto"]], ["max", ["вся модель на видеокарте", "the whole model on the GPU"]],
+                                                    ["off", ["только процессор", "the CPU only"]]],
+           ["Сколько модели держать в видеопамяти (--gpu).", "How much of the model goes to the graphics memory (--gpu)."], flag="--gpu"),
+        _o("parallel", ["Запросов одновременно", "Requests at once"], [["1", ["1 — для агента", "1: for the agent"]], ["2", ["2", "2"]], ["4", ["4", "4"]]],
+           ["LM Studio по умолчанию держит 4 — это вчетверо больше памяти под кэш.", "LM Studio keeps 4 by default: four times the cache memory."],
+           default="1", flag="--parallel"),
+    ],
+    "ollama": [
+        _o("flash", ["Flash attention", "Flash attention"], [["", AS_IS], ["1", ["вкл", "on"]], ["0", ["выкл", "off"]]],
+           ["Быстрее и меньше памяти на длинном контексте.", "Faster and less memory on a long context."], env="OLLAMA_FLASH_ATTENTION"),
+        _o("kv", ["Память разговора", "Conversation memory"],
+           [["", ["f16 — как обычно", "f16: as usual"]], ["q8_0", ["q8_0 — вдвое меньше памяти", "q8_0: half the memory"]],
+            ["q4_0", ["q4_0 — вчетверо меньше", "q4_0: a quarter"]]],
+           ["Формат кэша контекста; нужен flash attention.", "The context cache format; needs flash attention."], env="OLLAMA_KV_CACHE_TYPE"),
+        _o("parallel", ["Запросов одновременно", "Requests at once"], [["1", ["1 — для агента", "1: for the agent"]], ["2", ["2", "2"]], ["4", ["4", "4"]]],
+           ["Каждый слот берёт свой кэш контекста.", "Every slot takes its own context cache."], default="1", env="OLLAMA_NUM_PARALLEL"),
+        _o("keep", ["Держать модель в памяти", "Keep the model loaded"],
+           [["30m", ["30 минут", "30 minutes"]], ["2h", ["2 часа", "2 hours"]], ["-1", ["всегда", "always"]]],
+           ["Иначе Ollama выгружает её через 5 минут простоя и кэш пропадает.", "Otherwise Ollama unloads it after 5 idle minutes and the cache is lost."],
+           default="30m", env="OLLAMA_KEEP_ALIVE"),
+    ],
+    "llamacpp": [
+        _o("ngl", ["Слои на видеокарте", "Layers on the GPU"], [["", ["авто", "auto"]], ["999", ["все", "all"]], ["0", ["ни одного — процессор", "none: the CPU"]]],
+           ["-ngl", "-ngl"], flag="-ngl"),
+        _o("fa", ["Flash attention", "Flash attention"], [["", ["авто", "auto"]], ["on", ["вкл", "on"]], ["off", ["выкл", "off"]]], ["-fa", "-fa"], flag="-fa"),
+        _o("kv", ["Память разговора", "Conversation memory"],
+           [["", ["f16 — как обычно", "f16: as usual"]], ["q8_0", ["q8_0 — вдвое меньше памяти", "q8_0: half the memory"]],
+            ["q4_0", ["q4_0 — вчетверо меньше", "q4_0: a quarter"]]], ["-ctk / -ctv", "-ctk / -ctv"]),
+        _o("parallel", ["Запросов одновременно", "Requests at once"], [["1", ["1 — для агента", "1: for the agent"]], ["2", ["2", "2"]], ["4", ["4", "4"]]],
+           ["-np: контекст делится между слотами.", "-np: the context is split between the slots."], default="1", flag="-np"),
+        _o("vision", ["Картинки (mmproj)", "Pictures (mmproj)"], [["", ["если есть mmproj рядом", "when an mmproj is next to it"]], ["off", ["выкл", "off"]]]),
+    ],
+}
+TEXT_OPTS = {"args": {"key": "args", "type": "text", "label": ["Свои флаги", "Own flags"],
+                      "hint": ["Добавляются к команде запуска как есть.", "Added to the start command as they are."]},
+             "env": {"key": "env", "type": "text", "label": ["Переменные окружения", "Environment"],
+                     "hint": ["ИМЯ=значение через пробел.", "NAME=value, space separated."]}}
+
+
+def options(kind):
+    extra = ["env"] if kind == "ollama" else ["args", "env"]
+    return OPTIONS.get(kind, []) + [TEXT_OPTS[k] for k in extra] if kind in KINDS else []
+
+
+def opt(opts, kind, key):
+    """A chosen value, or the option's default ("" = the program's own)."""
+    o = next((x for x in OPTIONS.get(kind, []) if x["key"] == key), None)
+    v = (opts or {}).get(key)
+    return str(v) if v not in (None, "") else (o or {}).get("default", "") if o else ""
+
+
+def opt_flags(kind, opts, skip=()):
+    """The flags of the chosen settings that are plain flags, plus the own flags."""
+    out = []
+    for o in OPTIONS.get(kind, []):
+        v = opt(opts, kind, o["key"])
+        if o.get("flag") and v and o["key"] not in skip:
+            out += [o["flag"], v]
+    with suppress(ValueError):
+        out += shlex.split(str((opts or {}).get("args") or ""), posix=os.name != "nt")
+    return out
+
+
+def opt_env(kind, opts):
+    """Environment of the chosen settings (options with env, plus the free text NAME=value ...)."""
+    env = {o["env"]: opt(opts, kind, o["key"]) for o in OPTIONS.get(kind, []) if o.get("env") and opt(opts, kind, o["key"])}
+    for part in str((opts or {}).get("env") or "").split():
+        name, sep, value = part.partition("=")
+        if sep and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            env[name] = value
+    return env
+
+
+# ---------- own state: the last way and model per program, own ways, started processes ----------
 
 def home():
     with suppress(Exception):
@@ -81,22 +192,75 @@ def save_state(data):
         os.replace(tmp, path)
 
 
-def remember(kind, model=None, ctx=None, script=None, pid=None, **extra):
+def remember(kind, model=None, ctx=None, way=None, opts=None, pid=None, script=None, **extra):
+    """The last start of a program: its way, model, the context per model, its settings."""
     st = load_state()
     st["kind"] = kind
     if model is not None:
         st.setdefault("model", {})[kind] = model
     if ctx and model:
         st.setdefault("ctx", {})[f"{kind}|{model}"] = int(ctx)
-    if script is not None:
-        st.setdefault("script", {})[kind] = script
-        if script:
-            scripts = [s for s in st.get("scripts", []) if s != script]
-            st["scripts"] = ([script] + scripts)[:8]
+    if script:                      # a script picked by path: kept as an own way
+        way = way or save_way(kind, Path(script).stem, script, st=st)["id"]
+    if way:
+        st.setdefault("way", {})[kind] = way
+    if opts is not None:
+        st.setdefault("opts", {})[kind] = {k: v for k, v in opts.items() if v not in (None, "")}
     if pid is not None:
         st.setdefault("pid", {})[kind] = pid
-    for k, v in extra.items():
-        st[k] = v
+    st.update(extra)
+    save_state(st)
+
+
+def own_ways(st=None):
+    st = load_state() if st is None else st
+    # the picked files of the first version ("scripts", Strata only) are own ways now
+    for path in st.pop("scripts", None) or []:
+        st.setdefault("ways", []).append({"id": "own:" + secrets.token_hex(4), "kind": "strata", "type": "script",
+                                          "name": Path(path).stem, "command": path, "base": ""})
+    return [w for w in st.get("ways") or [] if isinstance(w, dict) and w.get("command")]
+
+
+def norm_base(addr, kind):
+    """An address typed in any form -> http://host:port/v1 (the program's default port when none is given)."""
+    addr = str(addr or "").strip()
+    if not addr:
+        return servers.default_base(kind) if kind in KINDS else ""
+    if addr.startswith(":") or addr.isdigit():      # ":5001" / "5001": a port on this PC
+        addr = "127.0.0.1:" + addr.lstrip(":")
+    p = servers.split_addr(addr)
+    if not p:
+        return addr
+    scheme, host, port, path = p
+    port = port or (port_of(kind) if kind in KINDS else 8080)
+    return f"{scheme}://{host}:{port}{path or '/v1'}"
+
+
+def save_way(kind, name, command, base="", way_id=None, st=None):
+    """Adds or changes an own way to start a program: a script file or a command line, and its address."""
+    own = st is not None
+    st = load_state() if st is None else st
+    ways = own_ways(st)
+    w = next((x for x in ways if x["id"] == way_id), None) if way_id else None
+    if not w:
+        w = next((x for x in ways if x["kind"] == kind and x["command"] == command), None)
+    if not w:
+        w = {"id": "own:" + secrets.token_hex(4), "kind": kind, "type": "script"}
+        ways.append(w)
+    w.update({"name": str(name or Path(str(command).strip('"')).stem or "my start")[:60], "command": str(command).strip(),
+              "base": norm_base(base, kind) if base else ""})
+    st["ways"] = ways
+    if not own:
+        save_state(st)
+    return w
+
+
+def remove_way(way_id):
+    st = load_state()
+    st["ways"] = [w for w in own_ways(st) if w["id"] != way_id]
+    for kind, w in list((st.get("way") or {}).items()):
+        if w == way_id:
+            st["way"].pop(kind)
     save_state(st)
 
 
@@ -259,16 +423,103 @@ def wait_up(base, seconds, say, proc=None, log=None, what="the server", check=No
     return False
 
 
+def _ready(kind, base):
+    """The server answers, and Strata's engine runs (its API answers before the model is in memory)."""
+    if servers.model_ids(base, timeout=2) is None:
+        return False
+    if kind == "strata" or servers.kind_of(base, timeout=2) == "strata":
+        return (strata_health(base) or {"loaded": False}).get("loaded") is not False
+    return True
+
+
+def console(command, cwd=None, title="maxedcode"):
+    """Runs a start script or a command line as it is, in a console window of its own (the user sees what it
+    prints and answers its questions); macOS / Linux: in the background, its output in a log."""
+    path = Path(str(command).strip().strip('"'))
+    is_file = path.is_file()
+    cwd = cwd or (str(path.parent) if is_file else None)
+    if os.name == "nt":
+        title = title.replace('"', "'")
+        if is_file and path.suffix.lower() == ".ps1":
+            line = f'cmd /c start "{title}" powershell -NoExit -ExecutionPolicy Bypass -File "{path}"'
+        else:
+            # cmd /k keeps the window when the server ends with an error; ""…"" survives spaces in the path
+            line = f'cmd /c start "{title}" cmd /k ""{path}""' if is_file else f'cmd /c start "{title}" cmd /k {command}'
+        return spawn(line, cwd=cwd)
+    cmd = ["sh", str(path)] if is_file and not os.access(path, os.X_OK) else [str(path)] if is_file else ["sh", "-c", command]
+    return spawn(cmd, log=log_file("script"), cwd=cwd)
+
+
+def script_start(kind, way, say):
+    """A start script or command (found or the user's own): run as it is, then wait for the server at its
+    address. The program that answers is asked which it is (an "other" way may be KoboldCpp, vLLM …)."""
+    command = str(way.get("command") or "").strip()
+    if not command:
+        return _fail("this way has no command")
+    path = Path(command.strip('"'))
+    # a path (quoted, or one word with a folder in it) must exist; anything else is a command line
+    quoted = command.startswith('"') and command.endswith('"') and command.count('"') == 2
+    if (quoted or (" " not in command and ("\\" in command or "/" in command))) and not path.is_file():
+        return _fail(f"the start script is not there: {command}")
+    base = way.get("base") or (servers.default_base(kind) if kind in KINDS else "")
+    if not base:
+        return _fail("the address of this server is not set: edit the way and give it (e.g. 127.0.0.1:5001)")
+    if kind in KINDS and urllib.parse.urlsplit(base).port == port_of(kind):
+        if not free_port(kind, say):
+            return _fail(f"port {port_of(kind)} is still taken")
+        if not servers.port_down(base):         # the same program runs another model: the script starts its own
+            say(f"stopping the {servers.LABELS[kind]} that runs now")
+            stop(kind)
+    elif not servers.port_down(base) and _ready(kind, base):
+        say("it is already running")
+        return _done(servers.kind_of(base, timeout=2) or kind, base, None)
+    say(f"starting {way.get('name') or path.name} in its own window")
+    label = servers.LABELS.get(kind) if kind in KINDS else "server"
+    console(command, title=f"{label} · {way.get('name') or path.stem}")
+    remember(kind, way=way.get("id"))
+    if not wait_up(base, WAIT.get(kind, 900), say, what=f"{label} at {base} (its window shows the progress)",
+                   log=None if os.name == "nt" else log_file("script"), check=lambda: _ready(kind, base)):
+        return _fail(f"nothing answered at {base}: see the script's window")
+    real = servers.kind_of(base, timeout=2) or (kind if kind in KINDS else "")
+    model = None
+    if real in servers.JIT_KINDS:
+        on = servers.loaded_models(base, kind=real) or []
+        model = on[0][0] if on else None
+    return _done(real or kind, base, model)
+
+
 # ---------- Strata ----------
 
 def strata_cli():
+    """[python, strata.py] with the Python bin\\strata.cmd would pick (STRATA_PYTHON, the bundled runtime, the
+    source checkout's .venv), else the strata command. Not the .cmd itself: a batch file run without a console
+    ended with "Terminate batch job (Y/N)?" while `strata launch` handed the server over, an exit code that
+    looked like a failed start (and the engine went with it)."""
     src = servers.strata_source()
     if src:
-        exe = src / "bin" / ("strata.cmd" if os.name == "nt" else "strata")
+        win = os.name == "nt"
+        for py in (servers.env_value("STRATA_PYTHON"), src / "python" / ("python.exe" if win else "bin/python3"),
+                   src / ".venv" / ("Scripts/python.exe" if win else "bin/python")):
+            if py and Path(py).is_file():
+                return [str(py), str(src / "strata.py")], src
+        exe = src / "bin" / ("strata.cmd" if win else "strata")
         if exe.is_file():
             return [str(exe)], src
     on_path = shutil.which("strata")
     return ([on_path], None) if on_path else (None, None)
+
+
+def strata_health(base):
+    """Strata's /health: "loaded" is whether its engine runs (the API answers before the model is in memory)."""
+    h = servers.get(servers.root(base) + "/health", timeout=2)
+    return h if isinstance(h, dict) else None
+
+
+def strata_starting(cli, src):
+    """`strata launch --status`: a launch that is starting or ready (it runs on after the command returns)."""
+    code, out = run([*cli, "launch", "--status", "--output", "json"], 30, cwd=str(src) if src else None)
+    return any(x.get("state") in ("starting", "ready") for x in (_json(out) or {}).get("running") or []
+               if isinstance(x, dict))
 
 
 def strata_models():
@@ -276,31 +527,37 @@ def strata_models():
     if not cli:
         return []
     code, out = run([*cli, "models", "list", "--installed", "--output", "json"], 60)
-    data = _json(out)
     models = []
-    for m in (data or {}).get("models") or []:
+    for m in (_json(out) or {}).get("models") or []:
         if isinstance(m, dict) and m.get("id") and m.get("component_status", "present") == "present":
             models.append({"id": str(m["id"]), "name": str(m.get("name") or m["id"]), "ctx": m.get("context_tokens"),
                            "max_ctx": None, "size": None})
     return models
 
 
+def strata_presets():
+    """The presets saved in Strata itself (`strata launch --save-preset NAME`, shared with the Strata app)."""
+    cli, src = strata_cli()
+    if not cli:
+        return []
+    code, out = run([*cli, "launch", "--list-presets", "--output", "json"], 60, cwd=str(src) if src else None)
+    names = []
+    for p in (_json(out) or {}).get("presets") or []:
+        name = p.get("name") if isinstance(p, dict) else p
+        if name:
+            names.append(str(name))
+    return names
+
+
 def strata_scripts():
-    """The user's own start scripts: <strata>\\launcher\\bat\\*.bat (written by a launcher window) and the files
-    picked before."""
+    """Start scripts a launcher wrote into the Strata folder (<strata>\\launcher\\bat\\*.bat, launcher/sh)."""
     _, src = strata_cli()
     found = []
     if src:
         for d in (src / "launcher" / "bat", src / "launcher" / "sh"):
             with suppress(OSError):
                 found += sorted(str(p) for p in d.iterdir() if p.suffix.lower() in (".bat", ".cmd", ".sh", ".ps1"))
-    found += [s for s in load_state().get("scripts", []) if Path(s).is_file()]
-    seen, out = set(), []
-    for s in found:
-        if s.lower() not in seen:
-            seen.add(s.lower())
-            out.append({"path": s, "name": Path(s).stem})
-    return out
+    return found
 
 
 def _json(text):
@@ -325,42 +582,50 @@ def strata_flags(cli, model, ctx):
     return ["--family", family, "--model", size]
 
 
-def strata_start(model, ctx, say, script=None):
+def strata_start(model, ctx, say, opts=None, preset=None):
     base = servers.default_base("strata")
     log = log_file("strata")
-    if script:
-        path = Path(script)
-        if not path.is_file():
-            return _fail(f"the start script is not there: {script}")
-        if not free_port("strata", say):
-            return _fail("port 8080 is still taken")
-        say(f"starting {path.name} in its own window")
-        if os.name == "nt":
-            spawn(["cmd", "/c", "start", f"Strata · {path.stem}", str(path)], cwd=str(path.parent))
-        else:
-            spawn(["sh", str(path)], log=log, cwd=str(path.parent))
-        remember("strata", script=str(path))
-        if not wait_up(base, WAIT["strata"], say, what="Strata (its window shows the progress)",
-                       log=None if os.name == "nt" else log):
-            return _fail("Strata did not answer on 127.0.0.1:8080: see its window")
-        return _done("strata", base, None)
     cli, src = strata_cli()
     if not cli:
-        return _fail("the strata command is not found: install Strata or pick its start script")
-    if not model:
+        return _fail("the strata command is not found: install Strata, or add your own way to start it")
+    if not preset and not model:
         return _fail("pick a model")
     if not free_port("strata", say):
         return _fail("port 8080 is still taken")
-    flags = strata_flags(cli, model, ctx)
+    if not servers.port_down(base):     # another model or context, or a server whose engine has ended
+        say("stopping the Strata that runs now")
+        strata_stop(say)
+    if preset:
+        args = ["--preset", preset]
+    else:
+        args = [*strata_flags(cli, model, ctx), "--context", str(ctx), *opt_flags("strata", opts)]
     log.write_text("", encoding="utf-8")
-    say(f"strata launch {' '.join(flags)} --context {ctx}")
-    proc = spawn([*cli, "launch", *flags, "--context", str(ctx), "--no-tui", "--yes"], log=log,
-                 cwd=str(src) if src else None,
-                 env={**os.environ, "PYTHONUTF8": "1", "STRATA_NO_PROMPT": "1"})
-    remember("strata", model=model, ctx=ctx, script="")
-    if not wait_up(base, WAIT["strata"], say, proc=proc, log=log, what="Strata to load the model"):
-        return _fail("Strata did not start: " + (" | ".join(tail(log, 3)) or "no output"))
-    return _done("strata", base, None)
+    say("strata launch " + " ".join(args))
+    proc = spawn([*cli, "launch", *args, "--no-tui", "--yes"], log=log, cwd=str(src) if src else None,
+                 env={**os.environ, "PYTHONUTF8": "1", "STRATA_NO_PROMPT": "1", **opt_env("strata", opts)})
+    if preset:
+        remember("strata", way="preset:" + preset)
+    else:
+        remember("strata", model=model, ctx=ctx, way="builtin", opts=opts or {})
+    # `strata launch` hands the server to Strata's own runtime and returns: its exit is no verdict while
+    # --status says the launch is starting. Ready = /health says the engine runs.
+    start, shown, checked = time.monotonic(), "", 0.0
+    while time.monotonic() - start < WAIT["strata"]:
+        h = strata_health(base)
+        if h and h.get("loaded") is not False:
+            return _done("strata", base, None)
+        if proc.poll() not in (None, 0) and not h and time.monotonic() - checked > 10:
+            checked = time.monotonic()
+            if not strata_starting(cli, src):
+                return _fail("Strata did not start: " + (" | ".join(tail(log, 3)) or "no output"))
+        secs = int(time.monotonic() - start)
+        text = (f"Strata is loading {model or preset} into memory… {secs} s" if h else
+                f"starting Strata… {secs} s" + (f" · {tail(log, 1)[-1][:140]}" if tail(log, 1) else ""))
+        if text != shown:
+            say(text)
+            shown = text
+        time.sleep(2)
+    return _fail(f"Strata did not get ready in {WAIT['strata'] // 60} minutes: " + (" | ".join(tail(log, 3)) or "no output"))
 
 
 def strata_stop(say):
@@ -387,56 +652,94 @@ def lms_cli():
     return found
 
 
+def lms_folder():
+    """LM Studio's model folder (its settings.json "downloadsFolder", else ~/.lmstudio/models)."""
+    h = Path.home()
+    with suppress(Exception):
+        d = json.loads((h / ".lmstudio" / "settings.json").read_text(encoding="utf-8")).get("downloadsFolder")
+        if d and Path(d).is_dir():
+            return Path(d)
+    return next((d for d in (h / ".lmstudio" / "models", h / ".cache" / "lm-studio" / "models") if d.is_dir()), None)
+
+
 def lms_models():
+    """The downloaded models. `lms ls` only while LM Studio's server runs: the lms command wakes LM Studio up
+    (a look at Settings started it). Off: the list seen last time, else the .gguf files of its model folder
+    (publisher/repo/file.gguf, the id `lms load` takes)."""
     base = servers.default_base("lmstudio")
     lms = lms_cli()
     models = []
-    if lms:
-        code, out = run([lms, "ls", "--json"], 30)
-        with suppress(ValueError):
-            for m in json.loads(out[out.index("["):]):
-                if isinstance(m, dict) and m.get("modelKey") and m.get("type") in ("llm", "vlm", None):
-                    models.append({"id": m["modelKey"], "name": m.get("displayName") or m["modelKey"],
-                                   "size": m.get("sizeBytes"), "max_ctx": m.get("maxContextLength"),
-                                   "vision": bool(m.get("vision")), "params": m.get("paramsString"),
-                                   "quant": (m.get("quantization") or {}).get("name")})
-    if not models and not servers.port_down(base):
-        d = servers.get(servers.root(base) + "/api/v0/models")
-        for m in (d or {}).get("data") or [] if isinstance(d, dict) else []:
-            if isinstance(m, dict) and m.get("id") and m.get("type") in ("llm", "vlm", None):
-                models.append({"id": m["id"], "name": m["id"], "size": None, "max_ctx": m.get("max_context_length"),
-                               "vision": m.get("type") == "vlm", "quant": m.get("quantization")})
+    if not servers.port_down(base):
+        if lms:
+            code, out = run([lms, "ls", "--json"], 30)
+            with suppress(ValueError):
+                for m in json.loads(out[out.index("["):]):
+                    if isinstance(m, dict) and m.get("modelKey") and m.get("type") in ("llm", "vlm", None):
+                        models.append({"id": m["modelKey"], "name": m.get("displayName") or m["modelKey"],
+                                       "size": m.get("sizeBytes"), "max_ctx": m.get("maxContextLength"),
+                                       "vision": bool(m.get("vision")), "params": m.get("paramsString"),
+                                       "quant": (m.get("quantization") or {}).get("name")})
+        if not models:
+            d = servers.get(servers.root(base) + "/api/v0/models")
+            for m in (d or {}).get("data") or [] if isinstance(d, dict) else []:
+                if isinstance(m, dict) and m.get("id") and m.get("type") in ("llm", "vlm", None):
+                    models.append({"id": m["id"], "name": m["id"], "size": None, "max_ctx": m.get("max_context_length"),
+                                   "vision": m.get("type") == "vlm", "quant": m.get("quantization")})
+        if models:
+            remember_quiet(lms_models=models)
+        return models
+    cached = load_state().get("lms_models")
+    if isinstance(cached, list) and cached:
+        return [m for m in cached if isinstance(m, dict) and m.get("id")]
+    root = lms_folder()
+    for path, size in gguf_files(roots=[root]) if root else []:
+        rel = path.relative_to(root).as_posix()
+        if rel.count("/") != 2:         # LM Studio's own layout only: publisher/repo/file.gguf
+            continue
+        models.append({"id": rel, "name": SHARD.sub(".gguf", path.name)[:-5], "size": size, "max_ctx": gguf_ctx(path),
+                       "vision": any(x.name.lower().startswith("mmproj") for x in path.parent.glob("*.gguf"))})
     return models
 
 
-def lms_start(model, ctx, say, script=None, force=False):
+def remember_quiet(**values):
+    """Keeps values in launch.json without touching the last started program."""
+    st = load_state()
+    st.update(values)
+    save_state(st)
+
+
+def lms_start(model, ctx, say, opts=None, force=False):
     base = servers.default_base("lmstudio")
     lms = lms_cli()
     if not lms:
         return _fail("LM Studio's command `lms` is not found: open LM Studio once (it sets lms up), then try again")
     if not model:
         return _fail("pick a model")
+    opts = opts or {}
     if servers.port_down(base):
         say("lms server start")
         run([lms, "server", "start"], 90)
         if not wait_up(base, 60, say, what="the LM Studio server"):
             return _fail("the LM Studio server did not start: open LM Studio -> Developer -> Start Server")
     on = servers.loaded_models(base, kind="lmstudio") or []
-    if len(on) == 1 and servers.same_model(on[0][0], model) and (on[0][1] or 0) == int(ctx) and not force:
+    same_opts = ((load_state().get("applied") or {}).get("lmstudio") or {}) == opts
+    if len(on) == 1 and servers.same_model(on[0][0], model) and (on[0][1] or 0) == int(ctx) and same_opts and not force:
         say(f"{model} is already loaded with {ctx} tokens")
-        remember("lmstudio", model=model, ctx=ctx)
+        remember("lmstudio", model=model, ctx=ctx, way="builtin", opts=opts)
         return _done("lmstudio", base, on[0][0])
     if on:
         say("lms unload --all")
         run([lms, "unload", "--all"], 120)
-    say(f"lms load {model} --context-length {ctx} --parallel 1")
+    # one slot by default: the agent sends one request at a time, and LM Studio's default 4 slots took 4x the
+    # cache memory (an 8B model at 32K spilled out of a 12 GB card and answered 20 tokens in 45 s)
+    flags = opt_flags("lmstudio", opts)
+    if "--parallel" in flags and "--parallel" not in run([lms, "load", "--help"], 20)[1]:
+        i = flags.index("--parallel")
+        del flags[i:i + 2]
+    cmd = [lms, "load", model, "--context-length", str(ctx), *flags, "-y"]
+    say("lms load " + " ".join(cmd[2:-1]))
     log = log_file("lmstudio")
     log.write_text("", encoding="utf-8")
-    # one slot: the agent sends one request at a time, and LM Studio's default 4 slots took 4x the cache memory
-    # (an 8B model at 32K spilled out of a 12 GB card and answered 20 tokens in 45 s)
-    cmd = [lms, "load", model, "--context-length", str(ctx), "-y"]
-    if "--parallel" in run([lms, "load", "--help"], 20)[1]:
-        cmd[3:3] = ["--parallel", "1"]
     proc = spawn(cmd, log=log)
     start = time.monotonic()
     while proc.poll() is None and time.monotonic() - start < WAIT["lmstudio"]:
@@ -448,7 +751,7 @@ def lms_start(model, ctx, say, script=None, force=False):
     hit = next((m for m in on if servers.same_model(m[0], model) or m[0].startswith(model)), None)
     if not hit:
         return _fail("LM Studio did not load the model: " + " | ".join(tail(log, 3)))
-    remember("lmstudio", model=model, ctx=ctx)
+    remember("lmstudio", model=model, ctx=ctx, way="builtin", opts=opts, applied={**(load_state().get("applied") or {}), "lmstudio": opts})
     return _done("lmstudio", base, hit[0])
 
 
@@ -513,11 +816,6 @@ def ollama_models():
     return models
 
 
-def _ollama_env(ctx):
-    keep = servers.env_value("OLLAMA_KEEP_ALIVE") or "30m"
-    return {"OLLAMA_CONTEXT_LENGTH": str(ctx), "OLLAMA_KEEP_ALIVE": keep}, keep
-
-
 def ollama_kill():
     if os.name == "nt":
         for name in ("ollama app.exe", "ollama.exe"):
@@ -533,22 +831,25 @@ def ollama_kill():
             kill(pid)
 
 
-def ollama_start(model, ctx, say, script=None):
+def ollama_start(model, ctx, say, opts=None):
     base = servers.default_base("ollama")
     r = servers.root(base)
     exe = ollama_cli()
     if not model:
         return _fail("pick a model (none downloaded? in a terminal: ollama pull qwen3:8b)")
-    env, keep = _ollama_env(ctx)
-    say(f"OLLAMA_CONTEXT_LENGTH={ctx} (saved for you, so Ollama started any other way uses it too)")
+    env = {"OLLAMA_CONTEXT_LENGTH": str(ctx), **opt_env("ollama", opts)}
+    keep = env.get("OLLAMA_KEEP_ALIVE") or "30m"
+    say(" ".join(f"{k}={v}" for k, v in env.items()) + " (saved for you: Ollama started any other way uses them too)")
     with suppress(Exception):
         servers.set_user_env(env)
+    applied = (load_state().get("applied") or {}).get("ollama")
 
     def serve():
         if not exe:
             return False
         say("ollama serve")
         spawn([exe, "serve"], log=log_file("ollama"), env={**os.environ, **env})
+        remember("ollama", applied={**(load_state().get("applied") or {}), "ollama": env})
         return wait_up(base, 60, say, what="Ollama", check=lambda: isinstance(servers.get(r + "/api/version"), dict))
 
     def load():
@@ -572,8 +873,11 @@ def ollama_start(model, ctx, say, script=None):
     if servers.port_down(base) and not serve():
         return _fail("Ollama did not start: start it from the Start menu (or: ollama serve)")
     err = load()
-    if not err and (window() or 0) != int(ctx):
-        say("Ollama serves another context: restarting it with the new one")
+    # the window is read back; the other variables only take effect at a start of the server
+    other = {k: v for k, v in env.items() if k != "OLLAMA_CONTEXT_LENGTH"}
+    stale = applied is not None and {k: v for k, v in applied.items() if k != "OLLAMA_CONTEXT_LENGTH"} != other
+    if not err and ((window() or 0) != int(ctx) or stale):
+        say("Ollama runs with other settings: restarting it with these")
         ollama_kill()
         wait_down(base, 20)
         if not serve():
@@ -581,7 +885,7 @@ def ollama_start(model, ctx, say, script=None):
         err = load()
     if err:
         return _fail(f"Ollama did not load {model}: {err}")
-    remember("ollama", model=model, ctx=ctx)
+    remember("ollama", model=model, ctx=ctx, way="builtin", opts=opts or {})
     return _done("ollama", base, model)
 
 
@@ -627,10 +931,10 @@ def gguf_dirs():
 SHARD = re.compile(r"-(\d{5})-of-\d{5}\.gguf$", re.I)
 
 
-def gguf_files(limit=200):
+def gguf_files(limit=200, roots=None):
     """GGUF models on this PC: no vision projectors (mmproj), only the first part of a split model."""
     found = []
-    for root in gguf_dirs():
+    for root in gguf_dirs() if roots is None else roots:
         for dirpath, dirnames, files in os.walk(root):
             if len(Path(dirpath).relative_to(root).parts) >= 5:
                 dirnames[:] = []
@@ -693,27 +997,34 @@ def llama_models():
     return out
 
 
-def llama_start(model, ctx, say, script=None):
+def llama_start(model, ctx, say, opts=None):
     base = servers.default_base("llamacpp")
     exe = llama_cli()
     if not exe:
-        return _fail("llama-server is not found: download llama.cpp (llama-server) and put it on PATH")
+        return _fail("llama-server is not found: download llama.cpp (llama-server) and put it on PATH, "
+                     "or add your own way to start it")
     if not model or not Path(model).is_file():
         return _fail("pick a .gguf model file")
     if not free_port("llamacpp", say):
         return _fail("port 8080 is still taken")
+    opts = opts or {}
     cmd = [exe, "-m", model, "-c", str(ctx), "--host", "127.0.0.1", "--port", "8080", "--jinja"]
+    flags = opt_flags("llamacpp", opts)
     code, helptext = run([exe, "--help"], 20)
-    if "--fit" not in helptext:         # older builds put nothing on the GPU unless asked
+    if "-ngl" not in flags and "--fit" not in helptext:     # older builds put nothing on the GPU unless asked
         cmd += ["-ngl", "999"]
+    kv = opt(opts, "llamacpp", "kv")
+    if kv:
+        cmd += ["-ctk", kv, "-ctv", kv]
     proj = sorted(Path(model).parent.glob("mmproj*.gguf"))
-    if proj:
+    if proj and opt(opts, "llamacpp", "vision") != "off":
         cmd += ["--mmproj", str(proj[0])]
+    cmd += flags
     log = log_file("llamacpp")
     log.write_text("", encoding="utf-8")
     say(" ".join(Path(x).name if i in (0, 2) else x for i, x in enumerate(cmd)))
-    proc = spawn(cmd, log=log)
-    remember("llamacpp", model=model, ctx=ctx, pid=proc.pid)
+    proc = spawn(cmd, log=log, env={**os.environ, **opt_env("llamacpp", opts)})
+    remember("llamacpp", model=model, ctx=ctx, way="builtin", opts=opts, pid=proc.pid)
     if not wait_up(base, WAIT["llamacpp"], say, proc=proc, log=log, what="llama-server to load the model",
                    check=lambda: (servers.get(servers.root(base) + "/health") or {}).get("status") == "ok"):
         return _fail("llama-server did not start: " + " | ".join(tail(log, 3)))
@@ -737,33 +1048,81 @@ MODELS = {"strata": strata_models, "lmstudio": lms_models, "ollama": ollama_mode
 START = {"strata": strata_start, "lmstudio": lms_start, "ollama": ollama_start, "llamacpp": llama_start}
 STOP = {"strata": strata_stop, "lmstudio": lms_stop, "ollama": ollama_stop, "llamacpp": llama_stop}
 CLI = {"strata": lambda: strata_cli()[0], "lmstudio": lms_cli, "ollama": ollama_cli, "llamacpp": llama_cli}
+OTHER_KINDS = [k for k in dict.fromkeys(servers.PORTS.values()) if k not in KINDS]    # vLLM, KoboldCpp, Jan …
 
 
 def status():
-    """What runs on the usual ports now: {kind: describe()} (8080 is Strata or llama.cpp: asked which)."""
+    """What runs on the usual ports now: {kind: describe() + "base"} (8080 is Strata or llama.cpp: asked which).
+    The other servers (vLLM, KoboldCpp, Jan, text-generation-webui) under their own kinds."""
     out = {}
 
-    def one(kind):
-        base = servers.default_base(kind)
+    def one(port):
+        base = f"http://127.0.0.1:{port}/v1"
         if servers.port_down(base):
             return None
-        info = servers.describe(base, kind="" if port_of(kind) == 8080 else kind, timeout=3)
-        return info if info.get("online") and (info["kind"] == kind or port_of(kind) != 8080) else None
-    with cf.ThreadPoolExecutor(4) as pool:
-        for kind, info in zip(KINDS, pool.map(one, KINDS)):
+        kind = servers.PORTS[port]
+        info = servers.describe(base, kind="" if port == 8080 else kind, timeout=3)
+        return {**info, "base": base} if info.get("online") else None
+    with cf.ThreadPoolExecutor(len(servers.PORTS)) as pool:
+        for port, info in zip(servers.PORTS, pool.map(one, servers.PORTS)):
             if info:
-                out[kind] = info
+                out[info["kind"] or servers.PORTS[port]] = info
     return out
 
 
+def follow_target(base):
+    """base is on this PC and does not answer, and exactly one other model server runs here (started from its
+    own window, a script, the tray): that one {"kind", "base", "model", "label"}, else None. The CLI and the
+    window switch the agent to it."""
+    host = (urllib.parse.urlsplit(str(base or "")).hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    if not servers.port_down(base) and servers.model_ids(base, timeout=2) is not None:
+        return None
+    on = {k: v for k, v in status().items() if v["base"].rstrip("/") != str(base).rstrip("/")}
+    if len(on) != 1:
+        return None
+    kind, info = next(iter(on.items()))
+    model = info.get("model") if kind in servers.JIT_KINDS else None
+    if kind in servers.JIT_KINDS and not model:      # LM Studio / Ollama with nothing loaded: nothing to follow
+        return None
+    return {"kind": kind, "base": info["base"], "model": model, "label": servers.LABELS.get(kind, kind)}
+
+
+def ways(kind, st=None, cli=None, presets=None, scripts=None):
+    """The ways to start a program, in the order they are offered: the builtin start, the program's own presets,
+    start scripts found in its folder, the user's own ways."""
+    st = load_state() if st is None else st
+    out = []
+    if kind in KINDS and cli:
+        out.append({"id": "builtin", "type": "builtin", "source": "builtin"})
+    for name in presets or []:
+        out.append({"id": "preset:" + name, "type": "preset", "name": name, "source": "program"})
+    for path in scripts or []:
+        out.append({"id": "script:" + path, "type": "script", "name": Path(path).stem, "command": path,
+                    "base": servers.default_base(kind), "source": "found"})
+    for w in own_ways(st):
+        if w["kind"] == kind:
+            out.append({**w, "source": "own"})
+    return out
+
+
+def way_by_id(kind, way_id, st=None):
+    return next((w for w in ways(kind, st, cli=True, presets=[way_id[7:]] if str(way_id).startswith("preset:") else [],
+                                 scripts=[way_id[7:]] if str(way_id).startswith("script:") else [])
+                 if w["id"] == way_id), None)
+
+
 def catalog():
-    """Every server this window can start: installed or not, running or not, its models and contexts."""
+    """Every program this window can start: installed or not, running or not, its ways, models and settings."""
     st = load_state()
     found = {x["kind"]: x for x in servers.installed()}
-    with cf.ThreadPoolExecutor(5) as pool:
+    with cf.ThreadPoolExecutor(8) as pool:
         running = pool.submit(status)
         lists = {k: pool.submit(_safe, MODELS[k]) for k in KINDS}
         clis = {k: pool.submit(_safe, CLI[k]) for k in KINDS}
+        presets = pool.submit(_safe, strata_presets)
+        scripts = pool.submit(_safe, strata_scripts)
         running = running.result()
         result = []
         for kind in KINDS:
@@ -772,30 +1131,45 @@ def catalog():
             cli = clis[kind].result()
             loaded = {}
             if info:
-                on = servers.loaded_models(servers.default_base(kind), kind=kind) if kind in servers.JIT_KINDS else None
+                on = servers.loaded_models(info["base"], kind=kind) if kind in servers.JIT_KINDS else None
                 name = on[0][0] if on else info.get("model")
                 loaded = {"model": name, "ctx": (on[0][1] if on else None) or info.get("ctx")}
-                if kind == "strata" and not name:
-                    loaded["model"] = (servers.model_ids(servers.default_base(kind)) or [None])[0]
+                if kind == "strata":
+                    h = strata_health(info["base"]) or {}
+                    loaded["model"] = name or h.get("model") or (servers.model_ids(info["base"]) or [None])[0]
+                    loaded["asleep"] = h.get("loaded") is False     # the engine is not running now
             for m in models:
                 m["ctxs"] = ctx_options(m.get("max_ctx"), m.get("ctx"), (st.get("ctx") or {}).get(f"{kind}|{m['id']}"))
                 m["pick_ctx"] = default_ctx(kind, m, st)
                 m["loaded"] = bool(loaded.get("model")) and (servers.same_model(loaded["model"], m["id"])
                                                              or str(loaded["model"]).startswith(m["id"])
                                                              or m["id"].lower() in str(loaded["model"]).lower())
+            w = ways(kind, st, cli, (presets.result() or []) if kind == "strata" else [],
+                     (scripts.result() or []) if kind == "strata" else [])
             entry = {"kind": kind, "label": servers.LABELS[kind], "about": ABOUT[kind],
                      "installed": bool(kind in found or cli), "running": bool(info),
-                     "base": servers.default_base(kind), "can_start": bool(cli) or kind == "strata" and bool(strata_scripts()),
+                     "base": servers.default_base(kind), "can_start": bool(cli) or len(w) > 0,
                      "loaded": loaded, "models": models, "download": DOWNLOAD[kind],
-                     "how": (found.get(kind) or {}).get("how", ""),
-                     "last_model": (st.get("model") or {}).get(kind), "script": (st.get("script") or {}).get(kind) or ""}
-            if kind == "strata":
-                entry["scripts"] = strata_scripts()
+                     "how": (found.get(kind) or {}).get("how", ""), "ways": w,
+                     "last_way": (st.get("way") or {}).get(kind) or "",
+                     "last_model": (st.get("model") or {}).get(kind),
+                     "options": options(kind), "opts": (st.get("opts") or {}).get(kind) or {}}
             if kind == "llamacpp":
                 entry["dirs"] = [str(d) for d in gguf_dirs()]
             if kind == "ollama" and not models:
                 entry["hint"] = "ollama pull qwen3:8b"
             result.append(entry)
+        # any other server: the user's own ways; what runs on the other usual ports
+        others = [dict(v, kind=k) for k, v in running.items() if k not in KINDS]
+        w = ways(OTHER, st)
+        result.append({"kind": OTHER, "label": "", "about": ABOUT[OTHER], "installed": True,
+                       "running": bool(others), "base": others[0]["base"] if others else "",
+                       "can_start": bool(w), "loaded": {"model": others[0].get("model"), "ctx": others[0].get("ctx"),
+                                                        "label": servers.LABELS.get(others[0]["kind"], "")} if others else {},
+                       "running_list": [{"kind": o["kind"], "label": servers.LABELS.get(o["kind"], o["kind"]),
+                                         "base": o["base"], "model": o.get("model")} for o in others],
+                       "models": [], "ways": w, "last_way": (st.get("way") or {}).get(OTHER) or "",
+                       "options": [], "opts": {}, "download": ""})
     return {"servers": result, "last": st.get("kind") or ""}
 
 
@@ -818,38 +1192,67 @@ def use(result):
     Ollama load whatever is named; Strata and llama.cpp serve one model: auto)."""
     with suppress(Exception):
         from . import appsettings
-        appsettings.apply({"base_url": result["base"], "server": result["kind"],
+        appsettings.apply({"base_url": result["base"], "server": result["kind"] or None,
                            "model": result.get("model") if result["kind"] in servers.JIT_KINDS else None})
         return True
     return False
 
 
-def start(kind, model=None, ctx=None, script=None, say=None):
+def start(kind, model=None, ctx=None, script=None, say=None, way=None, opts=None):
+    """Starts a program one of its ways (way: an id from ways(); none: the builtin start, or script)."""
     say = say or (lambda text, pct=None: None)
-    if kind not in START:
+    if kind not in START and kind != OTHER:
         return _fail(f"{kind or 'this server'} is not started from here")
     if servers.offline():
         return _fail("offline (MAXEDCODE_OFFLINE)")
     ctx = int(ctx or DEFAULT_CTX)
+    w = {"id": "", "type": "script", "command": script, "name": Path(str(script)).stem} if script else \
+        way_by_id(kind, way) if way and way != "builtin" else None
+    if way and way != "builtin" and not w:
+        return _fail("this way to start is gone: pick another one")
     try:
-        result = START[kind](model, ctx, say, script=script)
+        if w and w["type"] == "preset":
+            result = strata_start(None, ctx, say, preset=w["name"])
+        elif w:
+            if script:
+                remember(kind, script=script)
+            result = script_start(kind, w, say)
+        elif kind == OTHER:
+            result = _fail("add your own way to start this server: its command and address")
+        else:
+            result = START[kind](model, ctx, say, opts=opts or {})
     except Exception as e:            # a broken install must end the job with words, not a traceback
         result = _fail(f"{type(e).__name__}: {e}")
     if result.get("ok"):
-        result["ctx"] = ctx
-        live = servers.describe(result["base"], kind=kind, model=result.get("model"))
-        result["ctx"] = live.get("loaded_ctx") or live.get("ctx") or ctx
+        live = servers.describe(result["base"], kind=result["kind"] if result["kind"] != OTHER else "",
+                                model=result.get("model"))
+        result["kind"] = live.get("kind") or result["kind"]
+        result["ctx"] = live.get("loaded_ctx") or live.get("ctx") or (ctx if not w else None)
         result["model"] = result.get("model") or live.get("model") or live.get("use")
         result["saved"] = use(result)
     return result
 
 
-def stop(kind, say=None):
+def stop(kind, say=None, base=None):
+    """Stops a program (its own way: `strata launch --stop`, `lms server stop` …); a server of another kind at
+    an address: the process listening there."""
     say = say or (lambda text, pct=None: None)
-    if kind not in STOP:
-        return {"ok": False, "text": f"{kind} is not stopped from here"}
     try:
-        ok = STOP[kind](say)
+        if kind in STOP:
+            ok = STOP[kind](say)
+        elif base:
+            kind_now = servers.kind_of(base, timeout=2)
+            if kind_now in STOP:
+                ok = STOP[kind_now](say)
+            else:
+                port = urllib.parse.urlsplit(base).port
+                pid = listener(port) if port else None
+                if pid:
+                    say(f"stopping the server on port {port} (PID {pid})")
+                    kill(pid)
+                ok = wait_down(base, 20)
+        else:
+            return {"ok": False, "text": f"{kind} is not stopped from here"}
     except Exception as e:
         return {"ok": False, "text": f"{type(e).__name__}: {e}"}
     return {"ok": bool(ok), "text": "stopped" if ok else "it still answers"}
@@ -858,18 +1261,22 @@ def stop(kind, say=None):
 def main(argv):
     command = argv[1] if len(argv) > 1 else "get"
     body = {}
-    if command in ("start", "stop"):
+    if command in ("start", "stop", "set"):
         with suppress(ValueError):
             body = json.loads(sys.stdin.read() or "{}")
 
     def say(text, pct=None):
         print(json.dumps({"text": text, **({"pct": pct} if pct is not None else {})}, ensure_ascii=False), flush=True)
     if command == "start":
-        print(json.dumps(start(body.get("kind"), body.get("model"), body.get("ctx"), body.get("script"), say),
-                         ensure_ascii=False), flush=True)
+        print(json.dumps(start(body.get("kind"), body.get("model"), body.get("ctx"), body.get("script"), say,
+                               way=body.get("way"), opts=body.get("opts")), ensure_ascii=False), flush=True)
     elif command == "stop":
-        print(json.dumps({"done": True, **stop(body.get("kind"), say)}, ensure_ascii=False), flush=True)
+        print(json.dumps({"done": True, **stop(body.get("kind"), say, body.get("base"))}, ensure_ascii=False), flush=True)
     else:
+        if command == "set" and body.get("do") == "way-save" and body.get("command"):
+            save_way(body.get("kind") or OTHER, body.get("name"), body["command"], body.get("base") or "", body.get("id"))
+        elif command == "set" and body.get("do") == "way-remove" and body.get("id"):
+            remove_way(body["id"])
         print(json.dumps(catalog(), ensure_ascii=False))
     return 0
 

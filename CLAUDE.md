@@ -173,13 +173,16 @@ agent/
    │                     the installer ("Cloud API" line), /server, the app window (Settings → maxedcode: provider + API key).
    │                     find_base/candidates — an address in any form (IP, ip:port, URL) → the URL that responds;
    │                     auth_headers — the Anthropic key for /models goes in x-api-key
-   ├─ launch.py          run a model on this PC in one click (window Settings -> Models -> Run a model, the model menu
-   │                     under the input; CLI /local, /local stop): Strata (`strata launch --model --context --no-tui`,
-   │                     or the user's own start script in its own console), LM Studio (`lms load --context-length
-   │                     --parallel 1`), Ollama (OLLAMA_CONTEXT_LENGTH + restart + keep_alive), llama.cpp (`llama-server
-   │                     -m <gguf> -c`); a started server becomes the agent's (appsettings). The window runs it as a job:
-   │                     POST /api/launch {do: start|stop|cancel}, GET /api/launch?job=1. Never kills an unknown program
-   │                     on a busy port. ~/.maxedcode/launch.json keeps the last model/context per server, own scripts
+   ├─ launch.py          run a model on this PC the way each user starts it (window Settings -> Models, the model menu
+   │                     under the input; CLI /local, /local stop). Every program has ways to start: builtin (a model
+   │                     + a context + the program's own settings, OPTIONS: GPU, cache format, slots, own flags, env),
+   │                     preset (Strata's `--list-presets`), script (found: <strata>/launcher/bat; own: any .bat/.sh/
+   │                     .ps1 or command line + its address, for any program incl. "other": KoboldCpp, vLLM, Jan …),
+   │                     run in a console of its own. The last way/model/context/settings per program and own ways:
+   │                     ~/.maxedcode/launch.json. A started server becomes the agent's; a dead local server is followed
+   │                     to the only one that runs (follow_target, window + CLI start). Never wakes a program to look
+   │                     (no `lms` while LM Studio is off), never kills an unknown program on a busy port.
+   │                     Window: POST /api/launch {do: start|stop|cancel|way-save|way-remove}, GET /api/launch?job=1
    ├─ memory.py          memory: MEMORY.md indexes, topic files, @import, path-scoped rules, notes,
    │                     README.md of folders (docs injected on first touch of a file)
    ├─ hooks.py           hooks from settings.json (7 events, stdin/stdout JSON, exit code 2 = block)

@@ -814,3 +814,42 @@ body, .composer, .dialog, .menu { transition: background-color 0.2s ease, color 
 .btn.run-go { margin-left: auto; min-width: 140px; height: 36px; border-radius: 12px; }
 .run-job:empty + .btn.run-go, .run-job[hidden] + .btn.run-go { margin-left: auto; }
 .run-job-raw { font: 11.5px/16px "Cascadia Mono", Consolas, monospace; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Models / Connection: what the agent works with now (connNow), the servers found (one click) ── */
+.conn-now { display: flex; align-items: center; gap: 14px; padding: 14px 16px; margin: 4px 0 6px; border-radius: 20px;
+  border: 0.5px solid var(--hairline); background: var(--panel); }
+.conn-now.ok { border-color: color-mix(in srgb, var(--ok) 35%, var(--hairline)); }
+.conn-now .state-dot { width: 10px; height: 10px; }
+.conn-now.ok .state-dot { box-shadow: 0 0 0 4px color-mix(in srgb, #22c55e 18%, transparent); }
+.conn-now-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.conn-now-head { font-size: 11.5px; line-height: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.conn-now-main { font-size: 15px; line-height: 22px; color: var(--strong); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-now-sub { font-size: 12.5px; line-height: 18px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-group-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.set-group-row .set-group { margin-bottom: 8px; }
+.set-group-row .btn { margin-top: 16px; }
+.found-list { padding: 4px; }
+.found-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; }
+.found-row:hover { background: var(--hover); }
+.found-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.found-name { color: var(--strong); }
+.found-sub { font-size: 12px; line-height: 18px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.found-list .run-none, .found-list .run-empty { margin: 0; }
+.btn.run-add { align-self: flex-start; margin: -4px 0 0 4px; }
+
+/* Settings -> Models: the ways to start, More settings, the own-way form */
+.run-more { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 4px 2px; color: var(--muted); font-size: 13px; }
+.run-more:hover { color: var(--text); }
+.run-more svg { transition: transform 0.15s ease; }
+.run-more.open svg { transform: rotate(90deg); }
+.run-opts { margin: -4px 0 4px; padding: 0 2px; }
+.run-opts .row { padding: 10px 0; }
+.run-icon { width: 26px; height: 26px; opacity: 0.6; }
+.run-model:hover .run-icon { opacity: 1; }
+.way-form { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: var(--panel); }
+.way-form-title { font-weight: 500; color: var(--strong); }
+.way-form .set-hint { margin: 0; }
+.way-field { display: flex; flex-direction: column; gap: 6px; }
+.way-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.way-field .field { width: 100%; }
+.way-field .pick-row .field { flex: 1; width: auto; }
