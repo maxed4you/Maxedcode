@@ -588,10 +588,29 @@ def listening_ports():
     return sorted(p for p in ports if p >= 1024)
 
 
-def _probe_other(port, key, timeout):
+def lan_bound():
+    """[(ip, port)] something on this PC listens on for one of its own network addresses only (a server started
+    by hand with --host 192.168.x.x does not answer on 127.0.0.1 and is missed by listening_ports)."""
+    found = set()
+    if os.name == "nt":
+        with suppress(Exception):
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=15,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[3].upper() == "LISTENING":
+                    host, _, port = parts[1].rpartition(":")
+                    with suppress(ValueError):
+                        ip = ipaddress.ip_address(host)
+                        if ip.is_private and not (ip.is_loopback or ip.is_unspecified or ip.is_link_local) and port.isdigit()                                 and int(port) >= 1024:
+                            found.add((host, int(port)))
+    return sorted(found)
+
+
+def _probe_other(port, key, timeout, host="127.0.0.1"):
     """A port that is not one of the usual ones: a model server only when it lists models (an app asking for
     its own login, like this window's server, is not one)."""
-    base = f"http://127.0.0.1:{port}/v1"
+    base = f"http://{host}:{port}/v1"
     with suppress(Exception):
         ids = model_ids(base, key, timeout)
         if ids is not None:
@@ -605,12 +624,14 @@ def running(key="", timeout=1.5):
     """OpenAI-compatible servers that answer on this PC: the usual ports (PORTS order), then any other port a
     process listens on that lists models (a server started on its own port: Strata on 8081, LM Studio on 1235)."""
     others = [p for p in listening_ports() if p not in PORTS] if not offline() else []
-    with cf.ThreadPoolExecutor(max(1, min(32, len(PORTS) + len(others)))) as ex:
+    bound = lan_bound() if not offline() else []
+    with cf.ThreadPoolExecutor(max(1, min(32, len(PORTS) + len(others) + len(bound)))) as ex:
         usual = ex.map(lambda p: _probe_local(p, key, timeout), PORTS)
         # a local model server answers in milliseconds; a port that takes the connection and never answers (RDP,
         # Windows services) is not one: a short wait, or every look at the servers took a second longer
         extra = ex.map(lambda p: _probe_other(p, key, 0.3), others)
-        found = [x for x in list(usual) + list(extra) if x]
+        own = ex.map(lambda a: _probe_other(a[1], key, 0.5, a[0]), bound)
+        found = [x for x in list(usual) + list(extra) + list(own) if x]
     for x in found:
         x["label"] = LABELS.get(x["kind"], LABELS[""])
         x["running"] = True

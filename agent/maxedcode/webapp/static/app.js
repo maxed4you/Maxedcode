@@ -4072,6 +4072,7 @@
     addrHead: ['Адрес', 'Address'],
     addrSub: ['Сейчас используется этот. Другой компьютер или свой сервер — впишите IP или адрес в любом виде (192.168.0.10, 192.168.0.10:1234, http://host/v1), порт и /v1 подберутся сами.', 'This one is in use. Another computer or an own server: type an IP or an address in any form (192.168.0.10, 192.168.0.10:1234, http://host/v1); the port and /v1 are found.'],
     addrPh: ['например 192.168.0.10', 'e.g. 192.168.0.10'],
+    addrFill: ['Подставить в поле «Адрес»', 'Put into the Address field'], addrCopy: ['В адрес', 'To address'],
     addrTrying: ['Проверяю адрес…', 'Checking the address…'],
     addrFail: ['Не удалось связаться с приложением', 'Could not reach the app'],
     addrDown: ['Агент сейчас не достучался до своего сервера. Впишите другой адрес или выберите найденный сервер выше.', 'The agent cannot reach its server now. Type another address or pick a server found above.'],
@@ -4172,6 +4173,9 @@
   }
 
   var foundServers = null, lanServers = null, lanNets = []
+  function shortAddr(u) { return String(u || '').replace(/^https?:[/][/]/, '').replace(/[/]v1[/]?$/, '') }
+  var addrBox = null
+  function fillAddr(u) { if (addrBox) { addrBox.value = shortAddr(u); addrBox.focus() } }
   function renderConn() {
     var tab = $('tab-conn'), data = state.settings
     if (!tab) return
@@ -4211,7 +4215,10 @@
         info.appendChild(el('div', 'found-sub', [x.loaded || (models.length === 1 ? models[0] : models.length ? models.length + ' ' + t('setupModels') : ''),
           x.ctx ? ctxLabel(x.ctx) : '', String(x.base || '').replace(/^https?:[/][/]/, '')].filter(Boolean).join(' · ')))
         if (cur) r.appendChild(el('span', 'tag ok', '✓ ' + t('connected')))
-        else { var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) })) }
+        else {
+          r.appendChild(smallBtn(t('addrCopy'), function () { fillAddr(x.base) }, 'link')).title = shortAddr(x.base)
+          var b = r.appendChild(smallBtn(t('connect'), function () { connectTo(x, b) }))
+        }
       })
       if (!any) list.appendChild(el('div', 'found-note', t('foundNone')))
       // installed here but not running: shown so it is clear what this PC has; nothing is started from here
@@ -4223,7 +4230,7 @@
         info.appendChild(el('div', 'found-name', x.label))
         info.appendChild(el('div', 'found-sub', t('notRunning') + (x.path ? ' · ' + x.path : '')))
         r.title = t('notRunningSub')
-        r.appendChild(smallBtn(t('startIt'), function () { openSection('launch') }, 'outline'))
+        if (x.base) r.appendChild(smallBtn(shortAddr(x.base), function () { fillAddr(x.base) }, 'link')).title = t('addrFill')
       })
       if (Array.isArray(lanServers) && !lanServers.length) list.appendChild(el('div', 'found-note', t('lanNone') + (lanNets.length ? ' (' + lanNets.join(', ') + ')' : '')))
     }
@@ -4233,6 +4240,7 @@
     tab.appendChild(el('div', 'set-group', t('addrHead')))
     var addr = inputEl(t('addrPh'), '')
     addr.title = t('addrSub')
+    addrBox = addr
     var addrNote = el('div', 'found-note', '')
     var go = smallBtn(t('connect'), function () {
       var v = addr.value.trim()
@@ -4275,6 +4283,7 @@
         var info = r.appendChild(el('div', 'found-info'))
         info.appendChild(el('div', 'found-name', x.label && x.label !== 'OpenAI-compatible server' ? x.label : t('ownServer')))
         info.appendChild(el('div', 'found-sub', x.base_url.replace(/^https?:[/][/]/, '') + (x.model ? ' · ' + x.model : '') + (known === false ? ' · ' + t('nowOff') : '')))
+        r.appendChild(smallBtn(t('addrCopy'), function () { fillAddr(x.base_url) }, 'link')).title = shortAddr(x.base_url)
         r.appendChild(b)
       })
     }
