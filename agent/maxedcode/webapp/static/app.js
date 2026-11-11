@@ -123,7 +123,7 @@
     setupScan: ['Ищу серверы…', 'Looking for servers…'], setupNone: ['На этом компьютере серверов не нашлось. Установите LM Studio, Ollama или Strata, либо введите адрес.', 'No model server found on this PC. Install LM Studio, Ollama or Strata, or enter an address.'],
     setupUse: ['Выбрать', 'Use'], setupStart: ['Запустить', 'Start'], setupStarting: ['Запускаю…', 'Starting…'],
     setupRunning: ['запущен', 'running'], setupInstalled: ['установлен, не запущен', 'installed, not running'],
-    setupModels: ['моделей', 'models'], setupAgain: ['Искать снова', 'Look again'], setupLater: ['Позже', 'Later'],
+    setupModels: ['моделей', 'models'], setupAgain: ['Искать снова', 'Look again'],
     setupUrl: ['Другой адрес (IP или URL)', 'Another address (IP or URL)'], setupFind: ['Найти серверы', 'Find servers'],
     setupNoStart: ['Не ответил. Запустите его вручную: ', 'Did not answer. Start it yourself: '],
     setupRuns: ['запуск', 'starts with'], setupFrom: ['программа', 'program'],
@@ -3870,11 +3870,17 @@
   var setupShown = false
   function openSetup() {
     setupShown = true
-    var box = $('setup') || document.body.appendChild(el('div', 'modal'))
-    box.id = 'setup'
+    var box = $('setup')
+    if (!box) {
+      box = document.body.appendChild(el('div', 'modal'))
+      box.id = 'setup'
+      // a click on the dimmed backdrop closes it, like Settings
+      box.addEventListener('mousedown', function (e) { if (e.target === box) box.hidden = true })
+    }
     box.hidden = false
     box.innerHTML = ''
     var card = box.appendChild(el('div', 'setup-card'))
+    card.appendChild(iconBtn('x', '', function () { box.hidden = true })).classList.add('close')
     card.appendChild(el('h2', '', t('setupTitle')))
     card.appendChild(el('p', 'intro', t('setupIntro')))
     var recent = ((state.settings && state.settings.server) || {}).recent || [], recentBtn = null
@@ -3972,11 +3978,9 @@
     add.appendChild(url)
     add.appendChild(go)
     var actions = card.appendChild(el('div', 'save-row'))
-    var again = el('button', 'btn small link', t('setupAgain')), later = el('button', 'btn small link', t('setupLater'))
+    var again = el('button', 'btn small link', t('setupAgain'))
     again.onclick = scan
-    later.onclick = function () { box.hidden = true }
     actions.appendChild(again)
-    actions.appendChild(later)
     function scan() {
       note.textContent = t('setupScan')
       api('/api/servers').then(function (r) { draw((r && r.servers) || []) }, function () { draw([]) })
@@ -4275,7 +4279,8 @@
     else if (e.ctrlKey && !e.altKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); fontStep(1) }
     else if (e.ctrlKey && !e.altKey && e.key === '-') { e.preventDefault(); fontStep(-1) }
     else if (e.key === 'Escape') {
-      if (!$('modal').hidden) $('modal').hidden = true
+      if ($('setup') && !$('setup').hidden) $('setup').hidden = true
+      else if (!$('modal').hidden) $('modal').hidden = true
       else if (!$('menu').hidden) hideMenus()
       else if (state.chat && state.chat.run) {
         if (Date.now() - lastEsc < 900) { lastEsc = 0; stop() }

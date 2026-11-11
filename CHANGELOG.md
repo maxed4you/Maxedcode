@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+### App window
+- The "Find servers" window (Settings → Models → Find servers) now closes like the other windows: a click outside
+  it or Esc. The "Later" button is gone; the window has a close button (×) in its top-right corner instead.
+
 ## 1.1.1
 
 ### LM Studio / Ollama: the model you loaded, never a second one
