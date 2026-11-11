@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.1.4
+
+### Starting a model: "ready" only when the model is in memory
+- LM Studio: a start no longer shows "loading" for minutes over a model that is already loaded (`lms load` could
+  stay open after "Model loaded successfully"); a model you loaded yourself never counts as the new load.
+- Strata, llama.cpp and start scripts: a previous server that did not close is no longer taken for the new one
+  (the start said "ready" at once, with the old model). A start that cannot run fails in seconds, not 15 minutes.
+- Ollama: a big model that takes longer than the request counts once Ollama has it.
+- A Strata whose engine is not in memory shows "not in memory: loads with the first request", not "loaded".
+- Strata counts as installed only when there is something to run (leftovers of an unfinished first setup in
+  `~\.strata` no longer do).
+
+### Connection
+- After a start on the Start models tab the agent works with that server at once; Connection says
+  "The model comes from <address> · started on the Start models tab".
+- An address in any form no longer breaks a look at the servers (`http://pc[::1]` and the like).
+
+### The app window
+- A step that was refused (Plan mode) is no longer shown as done: no "Changed files" or "+N −M" for a write that
+  never happened. A step waiting for your Yes says "Writing a file", not "Wrote a file".
+- Every hint names the real Settings section (Connection, Browser); the Permissions text says what each mode does.
+- The window's server answers every request, also a broken one, instead of dropping the connection.
+
+### Setup and update
+- Install folders with spaces, Cyrillic letters, `( ) & ' !` (a user name like "Иван Петров (Work)"): the CLI
+  launcher without Windows Terminal, the double-click uninstall, the app shortcuts on uninstall and auto-update work.
+
+### Safety and tools
+- `grep` passes the pattern safely to ripgrep (a pattern like `--pre=...` could run a program).
+- More dangerous commands are caught: `ri`/`rd`, deleting a quoted `"C:\Program Files"`, `git push -fu`,
+  `git reset HEAD~1 --hard`, `rmtree` imports, writes to `.env::$DATA`.
+- File edits keep UTF-16 big-endian files, lone CR and rare line separators as they were; `apply_diff` handles
+  `-- comment` lines and pure insertions right; `glob` no longer walks a whole drive.
+- Odd model replies (empty choices, a non-JSON answer, arguments as an object, a call without a name, broken
+  Unicode) no longer crash a turn.
+
 ## 1.1.2
 
 ### App window
