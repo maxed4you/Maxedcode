@@ -905,6 +905,13 @@ def pick_file(start):
     return [x for x in r.stdout.splitlines() if x.strip()]
 
 
+class Server(ThreadingHTTPServer):
+    """The page asks for several things at once (settings, servers, sessions, a watched turn): the default
+    backlog of 5 connections refused some of them on Linux under load."""
+    daemon_threads = True
+    request_queue_size = 64
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"     # a turn streams until the run ends, then the connection closes
     server_version = "maxedcode"
@@ -924,6 +931,7 @@ class Handler(BaseHTTPRequestHandler):
         """A request that fails gets a JSON error instead of a dropped connection (the page waited for an
         answer); a page that went away is no error."""
         self.replied = False            # one handler serves every request of a kept-alive connection
+        self.consumed = False
         try:
             route()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -934,6 +942,23 @@ class Handler(BaseHTTPRequestHandler):
             if not getattr(self, "replied", False):
                 with suppress(Exception):
                     self.send(500, {"error": f"{type(error).__name__}: {error}"})
+        finally:
+            self.drain()
+
+    def drain(self):
+        """Reads what is left of a request body an answer did not need (401, 413, a body too big): closing a
+        socket with unread bytes makes Linux / macOS reset the connection, and the page got no answer at all."""
+        if self.command != "POST" or self.consumed:
+            return
+        with suppress(Exception):
+            n = int(self.headers.get("Content-Length") or 0)
+            if 0 < n <= UPLOAD_LIMIT:
+                self.connection.settimeout(5)
+                while n > 0:
+                    got = self.rfile.read(min(n, 1 << 20))
+                    if not got:
+                        break
+                    n -= len(got)
 
     def send_response(self, code, message=None):
         self.replied = True
@@ -959,7 +984,9 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         if n > UPLOAD_LIMIT:                # read(n) takes n bytes of memory before a byte comes
             raise ValueError("body too big")
-        data = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        raw = self.rfile.read(n)
+        self.consumed = True
+        data = json.loads(raw.decode("utf-8") or "{}")
         return data if isinstance(data, dict) else {}
 
     # ── routes ──
@@ -1267,6 +1294,7 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 <= n <= UPLOAD_LIMIT:      # an empty file is a file too
             return self.send(413, {"error": f"files up to {UPLOAD_LIMIT // 1_000_000} MB"})
         raw = self.rfile.read(n)
+        self.consumed = True
         name = Path(unquote(self.headers.get("X-File-Name") or "file")).name or "file"
         # a name the disk cannot take ("a:b" is an alternate stream, NUL a device, "\0" an error): a safe copy name
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "file"
@@ -1362,8 +1390,7 @@ def main(argv):
     port = 3077
     if "--port" in argv:
         port = int(argv[argv.index("--port") + 1])
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    httpd.daemon_threads = True
+    httpd = Server(("127.0.0.1", port), Handler)
     if os.name == "nt":                  # the old layouts were Windows-only (Documents\maxedcode ...)
         with suppress(Exception):
             move_old_workspace()
