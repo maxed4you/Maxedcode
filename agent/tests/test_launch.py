@@ -333,6 +333,50 @@ class Script(unittest.TestCase):
         self.assertIn("address", launch.script_start("other", {"command": "kobold.exe"}, lambda *a: None)["error"])
 
 
+class Programs(unittest.TestCase):
+    """Programs in places of their own: found on the disks, or pointed at by the user; servers on other ports."""
+    def setUp(self):
+        launch.save_state({})
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def make(self, *parts):
+        path = self.root.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+        return path
+
+    def test_find_programs_looks_through_the_folders_and_keeps_what_it_found(self):
+        llama = self.make("tools", "llama", "bin", "llama-server" + launch.EXE)
+        self.make("node_modules", "x", "ollama" + launch.EXE)                 # a skipped folder
+        kobold = self.make("ai", "koboldcpp_cu12" + (launch.EXE or ".py"))
+        with patch.object(launch.shutil, "which", lambda name: None), patch.object(launch, "ollama_cli", lambda: None),                 patch.object(launch, "lms_cli", lambda: None), patch.object(servers, "strata_source", lambda: None):
+            found, kobolds = launch.find_programs(10, roots=[(self.root, 4)])
+        self.assertEqual(found, {"llamacpp": str(llama)})
+        self.assertEqual(kobolds, [str(kobold)])
+        self.assertEqual(launch.load_state()["paths"]["llamacpp"], str(llama))
+        self.assertEqual(launch.llama_cli(), str(llama))
+        self.assertEqual([w["name"] for w in launch.ways(launch.OTHER)], [kobold.stem])     # a found way of "other"
+
+    def test_a_picked_file_must_be_the_programs_own(self):
+        llama = self.make("llama-server" + launch.EXE)
+        other = self.make("notepad" + launch.EXE)
+        self.assertEqual(launch.set_path("llamacpp", str(other)), None)
+        self.assertEqual(launch.set_path("llamacpp", f'"{llama}"'), str(llama))
+        strata = self.make("Strata", "strata.py")
+        self.make("Strata", "bin", "strata.cmd")
+        self.assertEqual(launch.check_path("strata", str(self.make("Strata", "engine", "x.txt"))), str(strata.parent))
+
+    def test_a_port_that_asks_for_a_login_is_no_model_server(self):
+        import urllib.error
+
+        def refuse(*a, **k):
+            raise urllib.error.HTTPError("u", 401, "login", {}, None)
+        with patch.object(servers, "model_ids", refuse):
+            self.assertIsNone(servers._probe_other(3091, "", 0.3))
+
+
 class Start(unittest.TestCase):
     def test_an_unknown_kind_and_offline_answer_with_words(self):
         self.assertFalse(launch.start("vllm")["ok"])

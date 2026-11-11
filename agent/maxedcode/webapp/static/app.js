@@ -3532,6 +3532,9 @@
     return m ? [m[1], m[2]] : [String(title || ''), '']
   }
   function sectionHead(tab, title, intro) {
+    // a redraw (Connect, Save, ...) empties the tab and would throw the scroll back to the top: keep it
+    var top = tab.scrollTop
+    if (top) Promise.resolve().then(function () { tab.scrollTop = top })
     tab.innerHTML = ''
     var p = splitCmd(title), h = el('h2', 'set-title', p[0])
     if (p[1]) h.appendChild(el('span', 'tag cmd', p[1]))
@@ -3728,6 +3731,31 @@
   }
   // ── the launch window: starting models from here is optional and lives apart from the settings, so working
   // with models started by hand is never in its way. Opened by the model menu and /local only. ──
+  // "Find programs": the disks are looked through for llama-server, Ollama, LM Studio's lms, Strata, KoboldCpp
+  var launchFinding = false
+  function findPrograms() {
+    launchFinding = true
+    redrawLaunch()
+    api('/api/launch?find=1').then(function (d) {
+      launchFinding = false
+      if (d && d.servers) launchData = d
+      var names = Object.keys((d && d.found) || {}).map(function (k) { return KIND_LABELS[k] || k }).concat(((d && d.kobold) || []).length ? ['KoboldCpp'] : [])
+      toast(names.length ? t('findFound') + ': ' + names.join(', ') : t('findNone'), 4000)
+      redrawLaunch()
+    }, function () { launchFinding = false; redrawLaunch() })
+  }
+  // "Where is it…": the user points at the program's file (llama-server.exe, ollama.exe, lms.exe, a Strata file)
+  function pickProgram(s) {
+    api('/api/pick-file', { start: '' }).then(function (r) {
+      var f = r && r.paths && r.paths[0]
+      if (!f) return
+      api('/api/launch', { do: 'path', kind: s.kind, path: f }).then(function (d) {
+        if (d && d.servers) launchData = Object.assign(d, { job: launchData && launchData.job })
+        if (d && d.error) toast(t('whereWrong'), 4000)
+        redrawLaunch()
+      })
+    })
+  }
   function openLauncher(kind) {
     var box = $('launcher')
     if (!box) {
@@ -3857,6 +3885,11 @@
     launchKind = s.kind
     var label = function (x) { return x.kind === 'other' ? t('otherKind') : x.label }
     var job = launchData.job, busy = !!(job && job.result === null)
+    var bar = box.appendChild(el('div', 'run-bar-top'))
+    bar.appendChild(smallBtn(t('foundAgain'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'link'))
+    var findB = bar.appendChild(smallBtn(launchFinding ? t('findBusy') : t('findPrograms'), findPrograms, 'link'))
+    findB.disabled = launchFinding
+    findB.title = t('findSub')
     // the programs as segments: a dot says running (green), installed (grey), missing (hollow)
     var seg = box.appendChild(el('div', 'run-seg'))
     list.forEach(function (x) {
@@ -3893,6 +3926,7 @@
       var acts = body.appendChild(el('div', 'run-actions'))
       acts.appendChild(smallBtn(t('runDownload') + ' ' + s.label, function () { window.open(s.download, '_blank', 'noopener,noreferrer') }))
       acts.appendChild(smallBtn(t('runRecheck'), function () { launchData = null; drawLaunch(); loadLaunch().then(redrawLaunch) }, 'outline'))
+      acts.appendChild(smallBtn(t('whereIs'), function () { pickProgram(s) }, 'outline'))
       acts.appendChild(smallBtn(t('wayAddShort'), function () { wayForm = { kind: s.kind }; drawLaunch() }, 'link'))
       if (wayForm && wayForm.kind === s.kind) wayFormBox(body, s)
       return
@@ -3997,6 +4031,10 @@
   // a cloud API with its key, the recent ones. Answers: sampling and the default effort.
   Object.assign(TEXT, {
     connTab: ['Подключение', 'Connection'],
+    findPrograms: ['Найти программы', 'Find programs'], findBusy: ['Ищу на дисках…', 'Looking…'],
+    findSub: ['Поискать llama-server, Ollama, LM Studio, Strata и KoboldCpp на дисках этого компьютера (несколько секунд)', 'Look for llama-server, Ollama, LM Studio, Strata and KoboldCpp on this computer\'s disks (a few seconds)'],
+    findFound: ['Найдено', 'Found'], findNone: ['Новых программ не найдено', 'No new programs found'],
+    whereIs: ['Указать, где она…', 'Where is it…'], whereWrong: ['Это не файл этой программы', 'This is not this program\'s file'],
     byApp: ['из приложения', 'from here'], byHand: ['запущен вручную', 'started by hand'],
     byAppSub: ['Запущен отсюда: новый запуск отсюда сначала закроет его', 'Started from here: a new start from here closes it first'],
     byHandSub: ['Запущен не из приложения: запуск отсюда его не закроет и не выгрузит ваши модели', 'Not started from here: a start from here never closes it or unloads your models'],

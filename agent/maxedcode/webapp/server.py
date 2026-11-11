@@ -978,6 +978,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/launch":        # Settings -> Models: servers, their models; ?job=1 only the job
             if query.get("job"):
                 return self.send(200, {"job": launch_job()})
+            if query.get("find"):            # "Find programs": the disks are looked through (up to 30 s)
+                return self.send(200, {**module("maxedcode.launch", "find", timeout=90), "job": launch_job()})
             return self.send(200, {**module("maxedcode.launch", "get", timeout=90), "job": launch_job()})
         if url.path == "/api/cli":
             return self.send(200, cli(query.get("cwd")))
@@ -1063,7 +1065,7 @@ class Handler(BaseHTTPRequestHandler):
             # servers.start waits up to 180 s for a model to load
             return self.send(200, module("maxedcode.servers", "start", str(data.get("start") or ""), timeout=200))
         if path == "/api/launch":           # start / stop / cancel a model server: {"do", "kind", "way", "model", "ctx"}
-            if data.get("do") in ("way-save", "way-remove"):        # own ways to start: the catalog after it
+            if data.get("do") in ("way-save", "way-remove", "path"):   # own ways, a program's file: the catalog after it
                 return self.send(200, {**module("maxedcode.launch", "set", body=data, timeout=90), "job": launch_job()})
             return self.send(200, {"job": launch_begin(data)})
         if path == "/api/cli":

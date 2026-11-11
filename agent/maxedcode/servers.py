@@ -539,6 +539,8 @@ def installed():
 def _probe_local(port, key, timeout):
     """One local port -> a running server's description or None."""
     base = f"http://127.0.0.1:{port}/v1"
+    if port_down(base):         # a closed port: 0.5 s, not the ~2 s Windows takes to refuse a connect
+        return None
     try:
         ids = model_ids(base, key, timeout)
     except urllib.error.HTTPError:
@@ -549,10 +551,55 @@ def _probe_local(port, key, timeout):
     return {"base": base, "kind": d["kind"], "models": ids, "loaded": d["model"], "ctx": d["ctx"], "need_key": False}
 
 
+def listening_ports():
+    """TCP ports something on this PC listens on for this PC (0.0.0.0, 127.0.0.1, ::, ::1), 1024 and up."""
+    ports = set()
+    if os.name == "nt":
+        for proto in ("TCP", "TCPv6"):
+            with suppress(Exception):
+                out = subprocess.run(["netstat", "-ano", "-p", proto], capture_output=True, text=True, timeout=15,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[3].upper() == "LISTENING":
+                        host, _, port = parts[1].rpartition(":")
+                        if host in ("0.0.0.0", "127.0.0.1", "[::]", "[::1]") and port.isdigit():
+                            ports.add(int(port))
+    else:
+        with suppress(Exception):
+            out = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True,
+                                 timeout=15).stdout
+            for line in out.splitlines():
+                if line.startswith("n"):
+                    host, _, port = line[1:].rpartition(":")
+                    if host in ("*", "127.0.0.1", "[::1]", "localhost", "[::]") and port.isdigit():
+                        ports.add(int(port))
+    return sorted(p for p in ports if p >= 1024)
+
+
+def _probe_other(port, key, timeout):
+    """A port that is not one of the usual ones: a model server only when it lists models (an app asking for
+    its own login, like this window's server, is not one)."""
+    base = f"http://127.0.0.1:{port}/v1"
+    with suppress(Exception):
+        ids = model_ids(base, key, timeout)
+        if ids is not None:
+            d = describe(base, key, timeout=timeout)
+            return {"base": base, "kind": d["kind"], "models": ids, "loaded": d["model"], "ctx": d["ctx"],
+                    "need_key": False}
+    return None
+
+
 def running(key="", timeout=1.5):
-    """OpenAI-compatible servers that answer on this PC's usual ports, in PORTS order."""
-    with cf.ThreadPoolExecutor(len(PORTS)) as ex:
-        found = [x for x in ex.map(lambda p: _probe_local(p, key, timeout), PORTS) if x]
+    """OpenAI-compatible servers that answer on this PC: the usual ports (PORTS order), then any other port a
+    process listens on that lists models (a server started on its own port: Strata on 8081, LM Studio on 1235)."""
+    others = [p for p in listening_ports() if p not in PORTS] if not offline() else []
+    with cf.ThreadPoolExecutor(max(1, min(32, len(PORTS) + len(others)))) as ex:
+        usual = ex.map(lambda p: _probe_local(p, key, timeout), PORTS)
+        # a local model server answers in milliseconds; a port that takes the connection and never answers (RDP,
+        # Windows services) is not one: a short wait, or every look at the servers took a second longer
+        extra = ex.map(lambda p: _probe_other(p, key, 0.3), others)
+        found = [x for x in list(usual) + list(extra) if x]
     for x in found:
         x["label"] = LABELS.get(x["kind"], LABELS[""])
         x["running"] = True

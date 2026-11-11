@@ -26,6 +26,7 @@ has its ways to start (catalog()["servers"][i]["ways"]), and each user keeps the
 A started server is chosen for the agent at once (appsettings: base_url, server, model). Standard library only,
 apart from maxedcode.servers (and appsettings / config when a start is saved).
 """
+import collections
 import concurrent.futures as cf
 import json
 import os
@@ -347,6 +348,109 @@ def outside(label, port):
                  "yourself, or just use it (Settings -> Connection)")
 
 
+# Program files looked for on the disks ("Find programs"); the user can also pick one ("Where is it…").
+EXE = ".exe" if os.name == "nt" else ""
+PROGRAM_FILES = {"llama-server" + EXE: "llamacpp", "ollama" + EXE: "ollama", "lms" + EXE: "lmstudio", "strata.py": "strata"}
+SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modules", ".git", "__pycache__",
+             "winsxs", "steamapps", "site-packages", ".cache", "temp", "tmp", "proc", "sys", "dev", "snap",
+             "windowsapps", "packages", "$windows.~bt", "$windows.~ws", "msocache", "recovery", "perflogs",
+             "microsoft", "windows defender", "windows kits", "dotnet", "assembly", "installer", "crashdumps",
+             "inetcache", "cache", "caches", "logs", "lib", "include", "share", "locale", "locales", "icons", "fonts"}
+
+
+def saved_path(kind):
+    """A program file the user picked or "Find programs" found, while it is still there."""
+    path = (load_state().get("paths") or {}).get(kind)
+    return path if path and Path(path).exists() else None
+
+
+def strata_folder(path):
+    """A Strata checkout / terminal install from any file or folder in it (strata.py next to bin\\strata.cmd)."""
+    for d in [Path(path)] + list(Path(path).parents)[:3]:
+        if (d / "strata.py").is_file() and any((d / "bin" / x).is_file() for x in ("strata.cmd", "strata", "strata.sh")):
+            return d
+    return None
+
+
+def check_path(kind, path):
+    """The file to keep for a program, from what the user picked: llama-server(.exe), ollama(.exe), lms(.exe)
+    (or LM Studio.exe: its lms is next to the user's .lmstudio), any file of a Strata folder. -> path | None."""
+    path = Path(str(path or "").strip().strip('"'))
+    if not path.exists():
+        return None
+    name = path.name.lower()
+    if kind == "strata":
+        d = strata_folder(path)
+        return str(d) if d else None
+    if kind == "lmstudio" and name.startswith("lm studio"):
+        return lms_cli() and str(path)
+    want = {"llamacpp": "llama-server", "ollama": "ollama", "lmstudio": "lms"}.get(kind)
+    return str(path) if want and path.is_file() and path.stem.lower() == want else None
+
+
+def set_path(kind, path):
+    good = check_path(kind, path)
+    if good:
+        st = load_state()
+        st.setdefault("paths", {})[kind] = good
+        save_state(st)
+    return good
+
+
+def find_programs(seconds=30, roots=None):
+    """Looks for the model programs on this PC's disks (the program folders, the home folder, then each drive
+    a few levels deep) for at most `seconds`: -> {kind: path} of the ones found where the usual places did not
+    have them, kept in launch.json. KoboldCpp files become a found way of "other"."""
+    end = time.monotonic() + seconds
+    given, roots = roots, []
+    if given:
+        roots = list(given)
+    elif os.name == "nt":
+        for env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "APPDATA"):
+            if os.environ.get(env):
+                roots.append((Path(os.environ[env]), 4))
+        roots.append((Path.home(), 4))
+        roots += [(Path(f"{d}:\\"), 4) for d in "CDEFGHIJ" if Path(f"{d}:\\").exists()]
+    else:
+        roots += [(Path.home(), 5), (Path("/opt"), 4), (Path("/usr/local"), 3), (Path("/Applications"), 4)]
+    found, kobold, seen = {}, [], set()
+
+    def walk(root, depth):
+        # breadth first: the shallow folders (where programs usually are) before the deep ones
+        queue = collections.deque([(root, 0)])
+        while queue and time.monotonic() < end and len(found) < len(set(PROGRAM_FILES.values())):
+            folder, level = queue.popleft()
+            key = str(folder).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            with suppress(OSError):
+                for entry in os.scandir(folder):
+                    name = entry.name.lower()
+                    with suppress(OSError):
+                        if entry.is_dir(follow_symlinks=False):
+                            if level < depth and name not in SKIP_DIRS and not name.startswith((".", "$")):
+                                queue.append((Path(entry.path), level + 1))
+                        elif name in PROGRAM_FILES:
+                            kind = PROGRAM_FILES[name]
+                            if kind not in found:
+                                good = check_path(kind, entry.path)
+                                if good:
+                                    found[kind] = good
+                        elif name.startswith("koboldcpp") and name.endswith(EXE or ".py") and len(kobold) < 4:
+                            kobold.append(entry.path)
+    # every root at once: the disks are read in parallel (one slow drive no longer holds the others)
+    with cf.ThreadPoolExecutor(len(roots) or 1) as pool:
+        list(pool.map(lambda r: walk(*r), roots))
+    st = load_state()
+    have = {"llamacpp": shutil.which("llama-server"), "ollama": ollama_cli(), "lmstudio": lms_cli(),
+            "strata": str(servers.strata_source() or "") or None}
+    st.setdefault("paths", {}).update({k: v for k, v in found.items() if not have.get(k)})
+    st["kobold"] = kobold
+    save_state(st)
+    return {k: v for k, v in found.items() if not have.get(k)}, kobold
+
+
 def log_file(kind):
     d = home() / "launch"
     d.mkdir(parents=True, exist_ok=True)
@@ -584,7 +688,7 @@ def strata_cli():
     source checkout's .venv), else the strata command. Not the .cmd itself: a batch file run without a console
     ended with "Terminate batch job (Y/N)?" while `strata launch` handed the server over, an exit code that
     looked like a failed start (and the engine went with it)."""
-    src = servers.strata_source()
+    src = servers.strata_source() or (Path(saved_path("strata")) if saved_path("strata") else None)
     if src:
         win = os.name == "nt"
         for py in (servers.env_value("STRATA_PYTHON"), src / "python" / ("python.exe" if win else "bin/python3"),
@@ -736,6 +840,9 @@ def strata_stop(say):
 # ---------- LM Studio ----------
 
 def lms_cli():
+    saved = saved_path("lmstudio")
+    if saved and Path(saved).name.lower().startswith("lms"):
+        return saved
     h = Path.home()
     exe = "lms.exe" if os.name == "nt" else "lms"
     found = shutil.which("lms") or next((str(p) for p in (h / ".lmstudio" / "bin" / exe,
@@ -869,6 +976,8 @@ def lms_stop(say):
 # ---------- Ollama ----------
 
 def ollama_cli():
+    if saved_path("ollama"):
+        return saved_path("ollama")
     if os.name == "nt":
         return shutil.which("ollama") or next((str(p) for p in (
             Path(os.environ.get("LOCALAPPDATA", "-"), "Programs", "Ollama", "ollama.exe"),) if p.is_file()), None)
@@ -1008,7 +1117,7 @@ def ollama_stop(say):
 # ---------- llama.cpp ----------
 
 def llama_cli():
-    saved = load_state().get("llama_server")
+    saved = saved_path("llamacpp") or load_state().get("llama_server")
     if saved and Path(saved).is_file():
         return saved
     return shutil.which("llama-server") or (servers._which("llama-server") if os.name != "nt" else None)
@@ -1173,10 +1282,17 @@ def status():
         kind = servers.PORTS[port]
         info = servers.describe(base, kind="" if port == 8080 else kind, timeout=3)
         return {**info, "base": base} if info.get("online") else None
-    with cf.ThreadPoolExecutor(len(servers.PORTS)) as pool:
-        for port, info in zip(servers.PORTS, pool.map(one, servers.PORTS)):
+    others = [p for p in servers.listening_ports() if p not in servers.PORTS]
+    with cf.ThreadPoolExecutor(max(1, min(32, len(servers.PORTS) + len(others)))) as pool:
+        usual = list(pool.map(one, servers.PORTS))
+        extra = list(pool.map(lambda port: servers._probe_other(port, "", 0.3), others))     # see servers.running
+        for port, info in zip(servers.PORTS, usual):
             if info:
                 out[info["kind"] or servers.PORTS[port]] = info
+        for x in extra:
+            if x and (x["kind"] or "other-" + x["base"]) not in out:
+                info = servers.describe(x["base"], kind=x["kind"], timeout=3)
+                out[x["kind"] or "other-" + x["base"]] = {**info, "base": x["base"]}
     return out
 
 
@@ -1211,6 +1327,11 @@ def ways(kind, st=None, cli=None, presets=None, scripts=None):
     for path in scripts or []:
         out.append({"id": "script:" + path, "type": "script", "name": Path(path).stem, "command": path,
                     "base": servers.default_base(kind), "source": "found"})
+    if kind == OTHER:
+        for path in st.get("kobold") or []:
+            if Path(path).is_file():
+                out.append({"id": "script:" + path, "type": "script", "name": Path(path).stem, "command": f'"{path}"',
+                            "base": "http://127.0.0.1:5001/v1", "source": "found"})
     for w in own_ways(st):
         if w["kind"] == kind:
             out.append({**w, "source": "own"})
@@ -1218,8 +1339,9 @@ def ways(kind, st=None, cli=None, presets=None, scripts=None):
 
 
 def way_by_id(kind, way_id, st=None):
+    scripted = str(way_id).startswith("script:") and kind != OTHER
     return next((w for w in ways(kind, st, cli=True, presets=[way_id[7:]] if str(way_id).startswith("preset:") else [],
-                                 scripts=[way_id[7:]] if str(way_id).startswith("script:") else [])
+                                 scripts=[way_id[7:]] if scripted else [])
                  if w["id"] == way_id), None)
 
 
@@ -1258,7 +1380,8 @@ def catalog():
                      (scripts.result() or []) if kind == "strata" else [])
             entry = {"kind": kind, "label": servers.LABELS[kind], "about": ABOUT[kind],
                      "installed": bool(kind in found or cli), "running": bool(info),
-                     "base": servers.default_base(kind), "can_start": bool(cli) or len(w) > 0,
+                     "base": (info or {}).get("base") or servers.default_base(kind), "can_start": bool(cli) or len(w) > 0,
+                     "path": saved_path(kind) or (str(cli[-1]) if isinstance(cli, list) else cli) or "",
                      "loaded": loaded, "models": models, "download": DOWNLOAD[kind],
                      "how": (found.get(kind) or {}).get("how", ""), "ways": w,
                      "last_way": (st.get("way") or {}).get(kind) or "",
@@ -1402,6 +1525,14 @@ def main(argv):
             save_way(body.get("kind") or OTHER, body.get("name"), body["command"], body.get("base") or "", body.get("id"))
         elif command == "set" and body.get("do") == "way-remove" and body.get("id"):
             remove_way(body["id"])
+        elif command == "set" and body.get("do") == "path":
+            if not set_path(body.get("kind"), body.get("path")):
+                print(json.dumps({**catalog(), "error": "this is not the program's file"}, ensure_ascii=False))
+                return 0
+        elif command == "find":
+            found, kobold = find_programs()
+            print(json.dumps({**catalog(), "found": found, "kobold": kobold}, ensure_ascii=False))
+            return 0
         print(json.dumps(catalog(), ensure_ascii=False))
     return 0
 
