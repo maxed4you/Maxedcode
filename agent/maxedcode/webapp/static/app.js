@@ -441,15 +441,33 @@
     node.addEventListener('animationend', function done(e) { if (e.target === node) { node.classList.remove('fresh'); node.removeEventListener('animationend', done) } })
     return node
   }
+  // The chat follows the answer until the reader scrolls up, whatever the distance (a nearness test let a small
+  // scroll up be pulled back, and a big piece of new text stopped the following); back at the end it follows again.
+  var follow = true, lastTop = 0
+  function fromEnd(s) { return s.scrollHeight - s.scrollTop - s.clientHeight }
   function scrollDown(force) {
     var s = $('scroll')
-    if (force || s.scrollHeight - s.scrollTop - s.clientHeight < 160) s.scrollTop = s.scrollHeight
+    if (force) follow = true
+    if (follow) { s.scrollTop = s.scrollHeight; lastTop = s.scrollTop }
+    updateToBottom()
+  }
+  function onChatScroll() {
+    var s = $('scroll'), gap = fromEnd(s)
+    if (gap < 30) follow = true
+    else if (s.scrollTop < lastTop - 2) follow = false   // moved up and not at the end (not text shrinking at the end)
+    lastTop = s.scrollTop
     updateToBottom()
   }
   // The reader scrolled up: the chat stops following the answer and a button brings them back to the end.
   function updateToBottom() {
     var s = $('scroll')
-    $('to-bottom').hidden = state.view !== 'chat' || s.scrollHeight - s.scrollTop - s.clientHeight < 160
+    $('to-bottom').hidden = state.view !== 'chat' || follow || fromEnd(s) < 30
+  }
+  // A box with its own scroll (reasoning) keeps showing its newest lines unless the reader scrolled it up
+  function keepEnd(box, change) {
+    var end = box.scrollHeight - box.scrollTop - box.clientHeight < 24
+    change()
+    if (end) box.scrollTop = box.scrollHeight
   }
   var toastEl = null, toastTimer = null
   function toast(text, ms) {
@@ -1016,8 +1034,9 @@
       this.think = { el: body, text: '' }
       this.workCount++
     }
-    this.think.text += text
-    this.think.el.textContent = this.think.text
+    var th = this.think
+    th.text += text
+    keepEnd(th.el, function () { th.el.textContent = th.text })
     scrollDown()
   }
   Answer.prototype.addText = function (text) {
@@ -4614,7 +4633,16 @@
   }
   resizer($('side-resize'), $('side'), 'sideW', 220, function () { return 420 }, false)
   resizer($('panel-resize'), $('panel'), 'panelW', 360, function () { return Math.max(360, innerWidth - 560) }, true)
-  $('scroll').addEventListener('scroll', updateToBottom)
+  $('scroll').addEventListener('scroll', onChatScroll)
+  // the wheel up stops following at once: new text arriving before the scroll event would pull the chat back
+  // (not when the wheel scrolls a box of its own inside, such as the reasoning)
+  $('scroll').addEventListener('wheel', function (e) {
+    var s = $('scroll')
+    if (e.deltaY >= 0 || e.ctrlKey || s.scrollTop <= 0) return
+    for (var n = e.target; n && n !== s; n = n.parentElement) if (n.scrollTop > 0 && n.scrollHeight > n.clientHeight + 1) return
+    follow = false
+    updateToBottom()
+  }, { passive: true })
   $('to-bottom').onclick = function () { scrollDown(true) }
   var draftTimer = null
   $('input').addEventListener('input', function () { clearTimeout(draftTimer); draftTimer = setTimeout(keepDraft, 400) })
