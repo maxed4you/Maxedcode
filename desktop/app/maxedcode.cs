@@ -278,22 +278,35 @@ static class Server
         throw new Exception("The maxedcode server did not start.\n\n" + (err.Length > 0 ? err : "See " + Log));
     }
 
-    /// <summary>The window closed: the server exits once idle; if it cannot be told, the one we started is stopped.</summary>
-    public static void Quit(string url)
+    /// <summary>The window closed: the server exits as soon as no turn runs (with `stop`, the running ones are
+    /// stopped first), so the next start is a new server and a downloaded update installs. If it cannot be told,
+    /// the one we started is stopped.</summary>
+    public static void Quit(string url, bool stop)
+    {
+        try { Post(url, "&now=1" + (stop ? "&stop=1" : "")); }
+        catch (Exception) { Stop(); }
+    }
+
+    /// <summary>How many turns the server still runs (0 when it does not answer).</summary>
+    public static int Running(string url)
     {
         try
         {
-            var request = (HttpWebRequest)WebRequest.Create(url.Replace("/?t=", "/api/quit?t="));
-            request.Method = "POST";
-            request.ContentLength = 0;
-            request.Timeout = 3000;
-            request.Proxy = null;
-            using (request.GetResponse()) { }
+            Match m = Regex.Match(Post(url, "&check=1"), "\"running\"\\s*:\\s*(\\d+)");
+            return m.Success ? int.Parse(m.Groups[1].Value) : 0;
         }
-        catch (Exception)
-        {
-            Stop();
-        }
+        catch (Exception) { return 0; }
+    }
+
+    static string Post(string url, string query)
+    {
+        var request = (HttpWebRequest)WebRequest.Create(url.Replace("/?t=", "/api/quit?t=") + query);
+        request.Method = "POST";
+        request.ContentLength = 0;
+        request.Timeout = 3000;
+        request.Proxy = null;
+        using (var response = request.GetResponse())
+        using (var reader = new StreamReader(response.GetResponseStream())) return reader.ReadToEnd();
     }
 
     public static void Stop()
@@ -677,10 +690,36 @@ class MainWindow : Form
         DwmSetWindowAttribute(Handle, 20, ref on, 4);       // DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 2004+)
     }
 
+    bool stopTurns;                                         // the user chose "stop it and close"
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        // A turn still running: closing the window used to leave the agent working unseen. Ask what to do.
+        int running = url != null && e.CloseReason == CloseReason.UserClosing ? Server.Running(url) : 0;
+        if (running > 0)
+        {
+            bool ru = Lang() == "ru";
+            // ru: "maxedcode is still working (chats: N). Yes - stop and close. No - let it finish in the
+            // background (open the window again to see it). Cancel - do not close." (escaped: csc reads ANSI)
+            string text = ru
+                ? "maxedcode \u0435\u0449\u0451 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 (\u0447\u0430\u0442\u043e\u0432: " + running +
+                  ").\n\n\u0414\u0430 \u2014 \u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438 \u0437\u0430\u043a\u0440\u044b\u0442\u044c.\n\u041d\u0435\u0442 \u2014 \u043f\u0443\u0441\u0442\u044c \u0434\u043e\u0434\u0435\u043b\u0430\u0435\u0442 \u0432 \u0444\u043e\u043d\u0435 (\u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u043e\u043a\u043d\u043e \u0441\u043d\u043e\u0432\u0430, \u0447\u0442\u043e\u0431\u044b \u0443\u0432\u0438\u0434\u0435\u0442\u044c).\n\u041e\u0442\u043c\u0435\u043d\u0430 \u2014 \u043d\u0435 \u0437\u0430\u043a\u0440\u044b\u0432\u0430\u0442\u044c."
+                : "maxedcode is still working (" + running + (running == 1 ? " chat" : " chats") +
+                  ").\n\nYes: stop it and close.\nNo: let it finish in the background (open the window again to watch).\nCancel: keep the window open.";
+            DialogResult answer = MessageBox.Show(this, text, "maxedcode", MessageBoxButtons.YesNoCancel,
+                                                  MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+            if (answer == DialogResult.Cancel) { e.Cancel = true; return; }
+            stopTurns = answer == DialogResult.Yes;
+        }
         SaveBounds();
         base.OnFormClosing(e);
+    }
+
+    /// <summary>The page's language as it last told the server (~\.maxedcode-app\lang.txt), else "".</summary>
+    static string Lang()
+    {
+        try { return File.ReadAllText(Path.Combine(MaxedcodeApp.Home, "lang.txt")).Trim(); }
+        catch (Exception) { return ""; }
     }
 
     protected override void OnActivated(EventArgs e)
@@ -693,7 +732,7 @@ class MainWindow : Form
     {
         if (tray != null) tray.Dispose();
         base.OnFormClosed(e);
-        if (url != null) Server.Quit(url);
+        if (url != null) Server.Quit(url, stopTurns);
     }
 
     // Window position: "x y width height maximized", restored only when it is still on a screen.

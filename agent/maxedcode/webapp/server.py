@@ -58,6 +58,9 @@ QUIT_WHEN_IDLE = threading.Event()   # the launcher's window closed: exit once n
 # macOS / Linux with the page in a browser tab (webapp/native.py): nobody reports the tab closing and a page load
 # must not cancel the wish, so the server exits once idle even with a page that loaded again
 QUIT_STICKY = threading.Event()
+# the window (exe / pywebview) closed for real: exit as soon as no turn runs, without IDLE_GRACE. Reusing an old
+# server for the next window kept a downloaded update from ever installing ("installs at the next start")
+QUIT_NOW = threading.Event()
 # a turn in a session of its own (macOS / Linux): kill_tree ends its whole process group
 POPEN_GROUP = {} if os.name == "nt" else {"start_new_session": True}
 IDLE_GRACE = 90               # seconds without a page request (an open window pings every 30 s)
@@ -1007,6 +1010,7 @@ class Handler(BaseHTTPRequestHandler):
         LAST_SEEN[0] = time.monotonic()
         if url.path in ("/", "/index.html"):
             QUIT_WHEN_IDLE.clear()           # a window opened on this server again
+            QUIT_NOW.clear()
         if url.path == "/api/ping":
             return self.send(200, {"running": sorted(RUNS)})
         if url.path == "/api/pty-list":
@@ -1086,10 +1090,23 @@ class Handler(BaseHTTPRequestHandler):
             # the launcher (it has the token, not the cookie): its window closed
             if not is_token((parse_qs(url.query).get("t") or [""])[-1]):
                 return self.send(401, {"error": "unauthorized"})
+            query = parse_qs(url.query)
+            if query.get("check"):               # the window asks before closing whether a turn still runs
+                return self.send(200, {"running": len(RUNS)})
+            if query.get("stop"):                # "stop it and close": every running turn ends now
+                with RUNS_LOCK:
+                    runs = list(RUNS.values())
+                for run in runs:
+                    kill_tree(run.proc)
             QUIT_WHEN_IDLE.set()
-            if parse_qs(url.query).get("browser"):
+            if query.get("browser"):
                 QUIT_STICKY.set()
-            return self.send(200, {"running": len(RUNS)})
+            if query.get("now"):                 # a real window closed: no grace for a page coming back
+                QUIT_NOW.set()
+            self.send(200, {"running": len(RUNS)})
+            if QUIT_NOW.is_set() and not RUNS:   # nothing runs: gone at once, the next start is a new server
+                threading.Thread(target=self.server.shutdown, daemon=True).start()   # (and installs an update)
+            return None
         if not self.authorized():
             return self.send(401, {"error": "unauthorized"})
         LAST_SEEN[0] = time.monotonic()
@@ -1376,6 +1393,9 @@ def quit_when_idle(httpd):
     window's host kept running), then exits once no page has come back for IDLE_GRACE seconds."""
     while True:
         time.sleep(2)
+        if QUIT_NOW.is_set() and not RUNS:
+            httpd.shutdown()
+            return
         if (QUIT_WHEN_IDLE.is_set() or QUIT_STICKY.is_set()) and not RUNS and \
                 time.monotonic() - LAST_SEEN[0] > IDLE_GRACE:
             httpd.shutdown()

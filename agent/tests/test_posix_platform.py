@@ -483,6 +483,28 @@ class AppWindowTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_closing_the_window_ends_an_idle_server_at_once(self):
+        # the next window must start a new server: reusing the old one kept a downloaded update from installing
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = httpd.server_address[1]
+        serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+        serving.start()
+        url = f"http://127.0.0.1:{port}/?t={server.TOKEN}"
+        try:
+            check = native.urllib.request.Request(url.replace("/?t=", "/api/quit?t=") + "&check=1", data=b"",
+                                                  method="POST")
+            with native.NOPROXY.open(check, timeout=5) as r:
+                self.assertEqual(json.loads(r.read()), {"running": 0})
+            self.assertFalse(server.QUIT_WHEN_IDLE.is_set())        # asking is not closing
+            native.quit_server(url)
+            serving.join(timeout=5)
+            self.assertFalse(serving.is_alive())
+            self.assertTrue(server.QUIT_NOW.is_set())
+        finally:
+            for flag in (server.QUIT_WHEN_IDLE, server.QUIT_STICKY, server.QUIT_NOW):
+                flag.clear()
+            httpd.server_close()
+
 
 class AppServerPosixTests(unittest.TestCase):
     def test_folder_dialogs_trash_and_open_in(self):

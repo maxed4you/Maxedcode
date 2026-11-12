@@ -9,8 +9,8 @@ itself: nothing here runs there).
 * the window: a native one by pywebview when it is installed and can start (macOS WKWebView; Linux pywebview's
   own pick, then Qt, then GTK, each tried in a process of its own so a backend that fails shows nothing), else
   the default browser, said in one calm line (what went wrong is in ~/.maxedcode-app/window.log);
-* closing the window: as closing the exe's window, POST /api/quit: a running turn goes on, the server exits once
-  no turn runs and no page has come back for a while.
+* closing the window: as closing the exe's window, POST /api/quit: a running turn goes on, the server exits as
+  soon as no turn runs (so the next start is a new server and a downloaded update installs).
 
 The page gets what only a desktop window can give through `window.pywebview.api` (Bridge): the folder and file
 dialogs, real paths of dropped files and folders, external links in the system browser, notifications.
@@ -166,11 +166,11 @@ def ensure_server(port, wait=90):
 
 
 def quit_server(url, browser=False):
-    """The window closed: the server exits once idle (a running turn goes on). `browser`: the page is a browser
+    """The window closed: the server exits once no turn runs (a running turn goes on). `browser`: the page is a browser
     tab whose closing nobody reports, so the server keeps that wish even when the page loads again and exits
     once no page has asked anything for a while (an open page pings every 10 s)."""
     try:
-        quit_url = url.replace("/?t=", "/api/quit?t=") + ("&browser=1" if browser else "")
+        quit_url = url.replace("/?t=", "/api/quit?t=") + ("&browser=1" if browser else "&now=1")
         req = urllib.request.Request(quit_url, data=b"", method="POST")
         with NOPROXY.open(req, timeout=3):
             pass

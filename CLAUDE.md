@@ -96,9 +96,13 @@ event in stream-json, the answer as a file in `AGENT_APPROVAL_DIR` (`headless.ap
 `--print --output-format stream-json --session <id>` in the chat folder; Plan/Auto mode → `AGENT_MODE`, effort → `AGENT_EFFORT`;
 "Settings → maxedcode" — `maxedcode/appsettings.py`. The tool list is one list for TUI, headless and window
 (`tools.catalog.session_catalog`): it is part of the system turn, and a different list used to reset the cache when
-switching CLI ↔ window. The turn belongs to the server (`webapp.server.Run`), not the page: leaving the chat, reloading and
-closing the window do not stop it; the page comes back via `/api/watch` (turn lines from the start, then live), and only
-`/api/stop` stops it. Window chats (`util.WINDOW_PREFIXES`: `app-`, `session-`) live next to the terminal sessions, but the
+switching CLI ↔ window. The turn belongs to the server (`webapp.server.Run`), not the page: leaving the chat and reloading
+do not stop it; the page comes back via `/api/watch` (turn lines from the start, then live), and `/api/stop` stops it.
+Closing the window with a turn running asks (exe: `/api/quit?check=1`): stop it and close (`&stop=1`) / let it finish in
+the background / cancel. Then `/api/quit?now=1`: the server exits as soon as no turn runs, with no grace — a window
+reopened onto the old server kept a downloaded update from ever installing (it installs only at a new server's start).
+`update.others()` drops a `running/<pid>` file whose pid now belongs to a newer process (Windows reuses pids; a killed
+turn leaves its file). Window chats (`util.WINDOW_PREFIXES`: `app-`, `session-`) live next to the terminal sessions, but the
 lists are separate: `/history`, `/search` and `--continue` do not see them, and the window sees only them
 (`list_sessions(window=True)`). The stream-json format and headless flags are the contract with the window: change them
 together with `maxedcode/webapp/static/app.js`.

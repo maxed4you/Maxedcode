@@ -229,6 +229,23 @@ class UpdateTests(unittest.TestCase):
         p.wait()
         self.assertFalse(update._alive(p.pid))
 
+    def test_a_pid_taken_by_a_newer_process_does_not_block_the_update(self):
+        # a killed maxedcode leaves its file; Windows soon gives the pid to another process (it was a user's
+        # process here, so it is alive and can be opened): it must not count as a running maxedcode
+        self.stage("99.0.0")
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(other.kill)
+        update.RUNNING.mkdir(parents=True, exist_ok=True)
+        f = update.RUNNING / str(other.pid)
+        f.write_text(str(self.program))
+        old = time.time() - 3600
+        os.utime(f, (old, old))                       # written an hour before this process started
+        if os.name == "nt":
+            self.assertEqual(update.others(), [])
+            self.assertFalse(f.exists())
+        else:                                          # no start time there: a live pid still counts
+            self.assertEqual(update.others(), [other.pid])
+
     def test_a_stale_lock_does_not_block_forever(self):
         update.DIR.mkdir(parents=True, exist_ok=True)
         lock = update.DIR / "check.lock"

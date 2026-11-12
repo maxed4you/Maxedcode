@@ -254,6 +254,34 @@ def _alive(pid):
         k.CloseHandle(h)
 
 
+def _started(pid):
+    """When the process `pid` started (unix time), or None when that cannot be told. Windows only: there a pid
+    comes back soon after its process ended (a killed turn leaves its file behind, and a later svchost with
+    the same pid must not hold back every update)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        times = [ctypes.c_ulonglong() for _ in range(4)]
+        if not k.GetProcessTimes(h, *[ctypes.byref(t) for t in times]):
+            return None
+        return (times[0].value - 116444736000000000) / 1e7    # FILETIME (100 ns since 1601) -> unix time
+    finally:
+        k.CloseHandle(h)
+
+
+def _registered(f, pid):
+    """The process that wrote the file `f` still runs: alive, and not a newer process that got its pid."""
+    if not _alive(pid):
+        return False
+    started = _started(pid)
+    return started is None or started <= f.stat().st_mtime + 5
+
+
 def register():
     """This process is a running maxedcode of PROGRAM (until it exits): no update while it runs."""
     with suppress(OSError):
@@ -272,7 +300,7 @@ def others():
                 pid = int(f.name)
                 if pid == os.getpid():
                     continue
-                if not _alive(pid):
+                if not _registered(f, pid):
                     f.unlink()
                 elif f.read_text(encoding="utf-8").strip() == str(PROGRAM):
                     alive.append(pid)
