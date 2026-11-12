@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.5
+
+### The app window: closing it closes it
+- Closing the window while the agent is still working asks: stop it and close, let it finish in the background,
+  or keep the window open. Before, the agent went on unseen and the app seemed never to close.
+- Once nothing runs, the window's server exits at once (it used to wait 90 seconds). A window opened again within
+  that time came back to the old server, so a downloaded update ("installs at the next start") never installed.
+
+### Setup and update
+- A maxedcode that was killed no longer holds back updates when Windows gives its process id to another program.
+
 ## 1.1.4
 
 ### Starting a model: "ready" only when the model is in memory
