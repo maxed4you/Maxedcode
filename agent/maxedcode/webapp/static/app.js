@@ -135,6 +135,7 @@
     recentUse: ['Вернуть', 'Switch back'],
     updVersion: ['Версия', 'Version'], updCheck: ['Проверить сейчас', 'Check now'], updChecking: ['Проверяю…', 'Checking…'],
     updUpToDate: ['последняя', 'up to date'], updReady: ['скачана, установится при следующем запуске', 'downloaded, installs at the next start'],
+    updReadyOff: ['скачана; автообновление выключено — поставится по maxed --update или когда включите его', 'downloaded; automatic updates are off: it installs with maxed --update or once they are on'],
     updNoInstall: ['эта копия не установка (git), не обновляется', 'this copy is not an install (git): not updated'],
     updAuto: ['Обновлять автоматически', 'Update automatically'],
     updAutoSub: ['Раз в день смотрит новый релиз на GitHub, скачивает его в фоне и ставит при следующем запуске. Сервер, чаты и настройки остаются.', 'Once a day looks for a new release on GitHub, downloads it in the background and installs it at the next start. The server, chats and settings stay.'],
@@ -3514,7 +3515,7 @@
     })
     if (!u.installed) check.disabled = true
     vrow.appendChild(check)
-    var sub = !u.installed ? t('updNoInstall') : u.ready ? u.ready + ' ' + t('updReady')
+    var sub = !u.installed ? t('updNoInstall') : u.ready ? u.ready + ' ' + t(u.auto ? 'updReady' : 'updReadyOff')
       : u.error ? u.error : u.latest ? t('updUpToDate') : ''
     tab.appendChild(row(t('updVersion') + ' ' + u.version, sub, vrow))
     if (u.installed) {

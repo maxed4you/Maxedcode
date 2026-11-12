@@ -1,7 +1,9 @@
 # maxedcode app as its own exe: compiles maxedcode.cs + program.cs into maxedcode.exe next to this script, signs it
 # with this PC's own code-signing certificate ("CN=maxedcode" in CurrentUser\My, made once, private key not
 # exportable; nothing is added to the trusted roots) and checks that Windows lets it run (maxedcode.exe --check).
-# Smart App Control blocks an unsigned exe; a signed one ran on the test PC. Exit 0: the exe is ready to use;
+# Smart App Control blocks an unsigned exe; a signed one ran on the test PC. It may still refuse a fresh build once
+# ("An Application Control policy has blocked this file") and let the next one run: up to 3 builds are tried
+# (an update replaced the exe with maxedcode.ps1 that way, 2026-11-12). Exit 0: the exe is ready to use;
 # anything else: keep using maxedcode.ps1 (the installer does exactly that).
 #
 #   powershell -File build-exe.ps1
@@ -9,7 +11,8 @@ $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
 $exe = Join-Path $Here 'maxedcode.exe'
 $new = Join-Path $Here 'maxedcode.new.exe'
-try {
+
+function Build {
     $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
     if (-not (Test-Path $csc)) { throw "csc.exe not found ($csc)" }
     $icon = Join-Path (Split-Path $Here) 'maxedcode.ico'
@@ -27,9 +30,22 @@ try {
     }
     $sig = Set-AuthenticodeSignature -FilePath $new -Certificate $cert -HashAlgorithm SHA256
     if (-not $sig.SignerCertificate) { throw "signing failed: $($sig.StatusMessage)" }
+}
 
-    $p = Start-Process -FilePath $new -ArgumentList '--check' -PassThru -Wait
-    if ($p.ExitCode -ne 0) { throw "the exe did not run (exit $($p.ExitCode))" }
+try {
+    for ($try = 1; ; $try++) {
+        Build
+        try {
+            $p = Start-Process -FilePath $new -ArgumentList '--check' -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw "the exe did not run (exit $($p.ExitCode))" }
+            break
+        }
+        catch {
+            if ($try -ge 3 -or $_.Exception.Message -notmatch 'policy|blocked') { throw }
+            Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+        }
+    }
     try { Move-Item -LiteralPath $new -Destination $exe -Force }
     catch { throw "maxedcode.exe is in use (the window is open): close it and run this again" }
     "ready: $exe"
