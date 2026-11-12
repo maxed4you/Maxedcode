@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.6
+
+### The app window
+- An open list (mode, model, project, Settings choices) closes when you click outside the window or on its title
+  bar, and when the window is resized; before, it stayed open.
+- The right panel's browser no longer covers Start models and the first-start dialog.
+- Escape closes one thing at a time: Start models closes and Settings under it stays.
+- Settings no longer says a downloaded release "installs at the next start" while automatic updates are off.
+
+### Setup and update
+- When Smart App Control refuses a freshly built app window once, setup builds it again (up to 3 times) instead
+  of falling back to the slower script window.
+
 ## 1.1.5
 
 ### The app window: closing it closes it
