@@ -2384,6 +2384,10 @@
     closedBy = owner && owner.contains && owner.contains(e.target) ? { el: owner, t: Date.now() } : { el: null, t: 0 }
     hideMenus()
   })
+  // A press that never reaches this page closes a menu too: another program, the window's title bar, the right
+  // panel's own browser or an iframe (the window loses focus), and a resize (the menu would hang off its button)
+  window.addEventListener('blur', function () { if (!$('menu').hidden || !$('submenu').hidden) hideMenus() })
+  window.addEventListener('resize', function () { if (!$('menu').hidden && !menuState.keyboard) hideMenus() })
   function modeMenu() {
     showMenu($('mode-btn'), [
       { label: 'Manual', sub: t('manualSub'), check: curMode() === 'manual', run: function () { setMode('manual') } },
@@ -3154,8 +3158,15 @@
     if (d && d.browser === 'state' && hostTabs[d.id]) hostTabs[d.id].state(d)
     if (d && d.dropped && drops[d.dropped]) { var x = drops[d.dropped]; delete drops[d.dropped]; x(d.paths || []) }
   })
+  // The panel's own browser is a window laid over the page: anything the page shows over it hides it (Start models
+  // and the first-start dialog are modals of their own, made when first opened: watchCover adds them)
+  var COVERS = ['menu', 'submenu', 'modal', 'launcher', 'setup']
   function covered() {
-    return !$('menu').hidden || !$('submenu').hidden || !$('modal').hidden || !!panelAnim
+    return COVERS.some(function (id) { return $(id) && !$(id).hidden }) || !!panelAnim
+  }
+  function watchCover(box) {
+    if (HOST && watch) watch.observe(box, { attributes: true, attributeFilter: ['hidden'] })
+    syncBrowsers()
   }
   function syncBrowsers() {
     Object.keys(hostTabs).forEach(function (id) {
@@ -3776,7 +3787,9 @@
       box = document.body.appendChild(el('div', 'modal'))
       box.id = 'launcher'
       box.addEventListener('mousedown', function (e) { if (e.target === box) closeLauncher() })
-      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !box.hidden) closeLauncher() })
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !box.hidden && !e.defaultPrevented) closeLauncher() })
+      box.hidden = true
+      watchCover(box)
     }
     if (kind) launchKind = kind
     box.hidden = false
@@ -4567,6 +4580,8 @@
       box.id = 'setup'
       // a click on the dimmed backdrop closes it, like Settings
       box.addEventListener('mousedown', function (e) { if (e.target === box) box.hidden = true })
+      box.hidden = true
+      watchCover(box)
     }
     box.hidden = false
     box.innerHTML = ''
@@ -4971,9 +4986,11 @@
     else if (e.ctrlKey && !e.altKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); fontStep(1) }
     else if (e.ctrlKey && !e.altKey && e.key === '-') { e.preventDefault(); fontStep(-1) }
     else if (e.key === 'Escape') {
-      if ($('setup') && !$('setup').hidden) $('setup').hidden = true
+      if (e.defaultPrevented) return                 // already used (the input closed its suggestions)
+      if (!$('menu').hidden) { e.preventDefault(); hideMenus() }   // the innermost first: a menu, then the dialog under it
+      else if ($('launcher') && !$('launcher').hidden) return   // its own handler closes it (Settings stays)
+      else if ($('setup') && !$('setup').hidden) $('setup').hidden = true
       else if (!$('modal').hidden) $('modal').hidden = true
-      else if (!$('menu').hidden) hideMenus()
       else if (state.chat && state.chat.run) {
         if (Date.now() - lastEsc < 900) { lastEsc = 0; stop() }
         else { lastEsc = Date.now(); toast(t('escAgain')) }

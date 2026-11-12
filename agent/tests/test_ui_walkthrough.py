@@ -72,5 +72,28 @@ class RunningWithoutItsProgram(unittest.TestCase):
         self.assertIn("runNoProgram: [", js)
 
 
+class MenusAndDialogs(unittest.TestCase):
+    """2026-11-12, clicked through in a real browser (Playwright on Edge): every list closed on a click in the
+    page, but stayed open when the press never reached the page (another program, the title bar)."""
+
+    def test_a_menu_closes_when_the_window_loses_focus_or_resizes(self):
+        js = APP_JS.read_text(encoding="utf-8")
+        self.assertRegex(js, r"window\.addEventListener\('blur', function \(\) \{[^}]*hideMenus\(\)")
+        self.assertRegex(js, r"window\.addEventListener\('resize', function \(\) \{[^}]*hideMenus\(\)")
+
+    def test_the_panel_browser_hides_under_every_dialog(self):
+        # the right panel's browser is a window over the page: Start models and the first-start dialog are
+        # modals of their own and were left under it
+        js = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("var COVERS = ['menu', 'submenu', 'modal', 'launcher', 'setup']", js)
+        self.assertEqual(js.count("      watchCover(box)\n"), 2)       # Start models and the first-start dialog
+
+    def test_escape_closes_one_layer(self):
+        # one Escape closed Start models and Settings under it at once
+        js = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("else if ($('launcher') && !$('launcher').hidden) return", js)
+        self.assertIn("e.key === 'Escape' && !box.hidden && !e.defaultPrevented) closeLauncher()", js)
+
+
 if __name__ == "__main__":
     unittest.main()
