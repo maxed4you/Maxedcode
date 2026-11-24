@@ -34,6 +34,7 @@ KEYS_DIR = HOME / "cloud_keys"                     # keys of the other accounts:
 PROVIDERS = {
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "AIza"),
     "openai": ("https://api.openai.com/v1/", "sk-proj-"),
+    "nvidia": ("https://integrate.api.nvidia.com/v1/", "nvapi-"),
     "anthropic": ("https://api.anthropic.com/v1/", "sk-ant-"),
     "openrouter": ("https://openrouter.ai/api/v1/", "sk-or-"),
     "deepseek": ("https://api.deepseek.com/v1/", ""),

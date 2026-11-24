@@ -35,6 +35,7 @@ LABELS = {"strata": "Strata", "llamacpp": "llama.cpp", "lmstudio": "LM Studio", 
 # label -> (kind, base URL). A cloud kind skips the probes of local servers and gets no local cache fields.
 CLOUD = {
     "OpenAI": ("openai", "https://api.openai.com/v1"),
+    "NVIDIA": ("nvidia", "https://integrate.api.nvidia.com/v1"),
     "Anthropic (Claude)": ("anthropic", "https://api.anthropic.com/v1"),
     "Google Gemini": ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
     "OpenRouter": ("openrouter", "https://openrouter.ai/api/v1"),

@@ -86,6 +86,7 @@
     rule_allow: ['Разрешено без вопроса', 'Allowed without asking'], rule_deny: ['Запрещено', 'Denied'], rule_ask: ['Спрашивать', 'Ask first'],
     cloudDefaultTag: ['по умолчанию', 'default'], keyOk: ['ключ сохранён', 'key saved'], cloudModelLbl: ['Модель', 'Model'],
     addProvider: ['Добавить ключ провайдера', 'Add a provider key'], cloudProvider: ['Провайдер', 'Provider'], cloudKeyLbl: ['API-ключ', 'API key'],
+    cloudCustom: ['Свой OpenAI-совместимый адрес', 'Custom OpenAI-compatible endpoint'], cloudBaseUrl: ['Base URL (для своего провайдера)', 'Base URL (custom provider only)'], cloudBasePh: ['https://example.com/v1', 'https://example.com/v1'],
     topPSub: ['0–1; доля вероятных слов, из которых выбирает модель (/sampling top_p)', '0-1; the share of likely words the model picks from (/sampling top_p)'],
     topKSub: ['Из скольких лучших слов выбирать; 0 — без ограничения (/sampling topk)', 'How many top words to pick from; 0 = no limit (/sampling topk)'],
     minPSub: ['0–1; отсекает маловероятные слова (/sampling min_p)', '0-1; cuts unlikely words (/sampling min_p)'],
@@ -4756,17 +4757,21 @@
       tab.appendChild(addCard)
       addCard.appendChild(el('div', 'set-provider-name', t('addProvider')))
       var prov = ''
-      var key = inputEl(t('cloudKeyPh')), model = inputEl(t('cloudModelPh'))
+      var key = inputEl(t('cloudKeyPh')), model = inputEl(t('cloudModelPh')), endpoint = inputEl(t('cloudBasePh'))
       key.type = 'password'
       key.autocomplete = 'off'
       function field(label, node) { var f = el('label', 'set-field'); f.appendChild(el('span', '', label)); f.appendChild(node); addCard.appendChild(f) }
-      field(t('cloudProvider'), pick([['', t('cloudAuto')]].concat(Object.keys(d.providers || {}).map(function (p) { return [p, p] })), '', function (v) { prov = v }))
+      field(t('cloudProvider'), pick([['', t('cloudAuto')]].concat(Object.keys(d.providers || {}).map(function (p) { return [p, p] })).concat([['__custom__', t('cloudCustom')]]), '', function (v) { prov = v }))
+      field(t('cloudBaseUrl'), endpoint)
       field(t('cloudKeyLbl'), key)
       field(t('cloudModelLbl'), model)
       addCard.appendChild(el('p', 'set-hint', t('cloudKeySafe')))
       var foot = el('div', 'set-editor-acts')
       foot.appendChild(smallBtn(t('cancel'), function () { cloudAdding = false; renderCloud() }, 'outline'))
-      var go = smallBtn(t('add'), function () { if (key.value.trim()) act({ do: 'add', provider: prov, key: key.value.trim(), model: model.value.trim() }, go) })
+      var go = smallBtn(t('add'), function () {
+        var provider = prov === '__custom__' ? endpoint.value.trim() : prov
+        if (key.value.trim() && (prov !== '__custom__' || provider)) act({ do: 'add', provider: provider, key: key.value.trim(), model: model.value.trim() }, go)
+      })
       foot.appendChild(go)
       addCard.appendChild(foot)
       setTimeout(function () { key.focus() }, 0)
