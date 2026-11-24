@@ -1,7 +1,7 @@
 {
   "name": "maxedcode",
-  "version": "1.1.6",
-  "description": "A coding agent that runs on your own models: local (LM Studio, Ollama, llama.cpp, vLLM) or any OpenAI-compatible API. Windows, Linux and macOS. CLI + app window + browser extension.",
+  "version": "1.1.7",
+  "description": "Open-source coding agent for local and OpenAI-compatible models, including NVIDIA NIM. Terminal CLI, desktop app, and browser extension for Windows, macOS, and Linux.",
   "keywords": [
     "ai",
     "agent",
@@ -16,7 +16,11 @@
     "windows",
     "linux",
     "macos",
-    "terminal"
+    "terminal",
+    "nvidia",
+    "nim",
+    "browser-extension",
+    "desktop-app"
   ],
   "homepage": "https://github.com/maxed4you/Maxedcode#readme",
   "bugs": "https://github.com/maxed4you/Maxedcode/issues",
@@ -44,6 +48,8 @@
     "!agent/run_all_tests.*",
     "!agent/settings.json",
     "!agent/config.json",
+    "!agent/.pytest_cache/",
+    "!**/.pytest_cache/**",
     "!**/__pycache__/",
     "desktop/",
     "!desktop/README.md",

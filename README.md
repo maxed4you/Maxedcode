@@ -5,10 +5,10 @@
 [![npm](https://img.shields.io/npm/v/maxedcode.svg)](https://www.npmjs.com/package/maxedcode)
 [![tests](https://github.com/maxed4you/Maxedcode/actions/workflows/tests.yml/badge.svg)](https://github.com/maxed4you/Maxedcode/actions/workflows/tests.yml)
 
-A coding agent for Windows (and now Linux and macOS) that runs on **your own models**. It reads and edits your project, runs PowerShell and
+An open-source coding agent for local models and OpenAI-compatible APIs, including NVIDIA NIM. It reads and edits your project, runs PowerShell and
 Python, searches files and the web, and remembers your chats. Use any model you like: a small one on your own PC or a
 big one in the cloud. It works with LM Studio, Ollama, llama.cpp, vLLM, Jan, Strata, a server on another PC in your
-network, cloud APIs (OpenAI, Claude, Gemini, DeepSeek, Groq, Mistral, xAI, OpenRouter ...) or any OpenAI-compatible
+network, cloud APIs (OpenAI, NVIDIA NIM, Claude, Gemini, DeepSeek, Groq, Mistral, xAI, OpenRouter ...) or any OpenAI-compatible
 URL.
 
 You get three things:
@@ -175,7 +175,7 @@ On Linux / macOS the folder (`~/.local/share/maxedcode`) holds `README.txt` and 
 | vLLM, Jan | found on this PC by setup; any OpenAI-compatible server works through its URL |
 | Strata | `127.0.0.1:8080`; model and context are read at every start |
 | another PC | type its address in any form: `192.168.0.10`, `192.168.0.10:1234`, `http://pc:8080/v1` (the port and `/v1` are found); that server must listen on the network |
-| cloud | OpenAI, Anthropic (Claude), Google Gemini, DeepSeek, Groq, Mistral, xAI (Grok), OpenRouter, Together AI, Cerebras: pick one and paste your API key |
+| cloud | OpenAI, NVIDIA NIM, Anthropic (Claude), Google Gemini, DeepSeek, Groq, Mistral, xAI (Grok), OpenRouter, Together AI, Cerebras: pick one and paste your API key |
 | anything else | any OpenAI-compatible URL, with or without a key |
 
 Choose or change the server in setup, with `maxed configure`, with `/server` in the CLI, or in the app under

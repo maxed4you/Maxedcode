@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.7
+
+### NVIDIA and custom API providers
+- NVIDIA NIM is available as a provider for the main model connection and the cloud coding assistant.
+- Cloud settings can use any OpenAI-compatible API base URL; NVIDIA API keys are recognized automatically.
+
+
 ## 1.1.6
 
 ### The app window
