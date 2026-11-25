@@ -34,6 +34,14 @@ class RequestCompatibilityTests(unittest.TestCase):
         got = unsupported_optional_fields("model overloaded; retry later", self.fields)
         self.assertIsNone(got)
 
+    def test_opaque_bad_request_drops_generation_extras_but_keeps_the_cache(self):
+        # OpenAI SDK text: "Error code: 400 - Bad Request" (NVIDIA NIM names no field, e.g. for min_p)
+        got = unsupported_optional_fields("Error code: 400 - Bad Request", self.fields)
+        self.assertEqual(got, {"top_k", "min_p", "reasoning_effort", "reasoning_budget_tokens", "chat_template_kwargs"})
+        self.assertNotIn("promptCacheKey", got)
+        self.assertNotIn("strata_prefix", got)
+        self.assertNotIn("cache_prompt", got)
+
 
 if __name__ == "__main__":
     unittest.main()

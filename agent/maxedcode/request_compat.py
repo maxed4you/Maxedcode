@@ -12,6 +12,9 @@ _REJECTION = re.compile(
     r"does not support|is not supported|invalid parameter",
     re.IGNORECASE,
 )
+# Some cloud gateways answer a rejected field with a bare "Bad Request" and no field name
+# (NVIDIA NIM: min_p -> {"message": "Bad Request"}). The generation extras are tried without first.
+_OPAQUE_400 = re.compile(r"(?:^|\b)bad request\b|\berror code:\s*400\b", re.IGNORECASE)
 _KNOWN_FIELDS = {
     "cache_prompt", "promptCacheKey", "strata_prefix",
     "top_k", "min_p", "reasoning_effort", "reasoning_budget_tokens",
@@ -29,7 +32,7 @@ def unsupported_optional_fields(message, candidates):
     the field. In that case remove generation/sampling extras first, preserving cache controls.
     """
     message = str(message or "")
-    if not _REJECTION.search(message):
+    if not (_REJECTION.search(message) or _OPAQUE_400.search(message)):
         return None
     candidate_names = {str(name).lower(): str(name) for name in candidates}
     named = set()
