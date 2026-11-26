@@ -1208,8 +1208,9 @@ def tool_grep(pattern, path=".", glob=None, context=None, output_mode="content")
             yield root
             return
         for d, ds, fs in os.walk(root):
-            ds[:] = [x for x in ds if x not in SKIP_DIRS and not blocked(Path(d) / x, read=True)]
-            for f in fs:
+            # Sorted, as in tool_glob: Linux lists a folder in hash order, so a cut search kept random files.
+            ds[:] = sorted(x for x in ds if x not in SKIP_DIRS and not blocked(Path(d) / x, read=True))
+            for f in sorted(fs):
                 if not blocked(Path(d) / f, allow_tool_output_read=True, read=True):
                     yield Path(d) / f
 

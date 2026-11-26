@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.8
+
+### Search
+- Without ripgrep, file search walks folders in name order, so a search cut at its limit gives the same result on
+  every system.
+- A custom API server that refuses an optional request field with an unexplained "bad request" no longer stops the
+  request.
+
 ## 1.1.7
 
 ### NVIDIA and custom API providers
